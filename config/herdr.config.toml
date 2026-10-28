@@ -1,0 +1,53 @@
+# Herdr config de Pablo — AgentNav E0 (2026-10-28)
+# Referencia de cada clave: herdr --default-config
+# Backup previo: config.toml.bak-2026-10-28
+
+onboarding = false
+
+[theme]
+name = "catppuccin"
+auto_switch = false
+
+[terminal]
+# Paneles con PowerShell 7 en vez de Windows PowerShell 5.1
+default_shell = "pwsh"
+
+[keys]
+# 28/10: con teclado en español, "?" después del prefijo no se reconoce (las letras sí).
+# La ayuda va en F1. Si ctrl+b molesta porque Claude Code lo usa para mandar tareas a segundo plano, cambiar a prefix = "f12".
+prefix = "ctrl+b"
+help = "prefix+f1"
+
+# AgentNav E2: selector de proyectos como popup de Herdr (ctrl+b, soltar, alt+p)
+[[keys.command]]
+key = "prefix+alt+p"
+type = "popup"
+command = "py -I C:\\AgentNav\\agentnav.py pick"
+width = "70%"
+height = "60%"
+
+[ui]
+# Lista de agentes como cola de atención: bloqueados primero
+agent_panel_sort = "priority"
+# Glifos distintos por estado, no sólo puntos de color
+status_indicators = "symbols"
+# ctrl+b c abre la pestaña sin preguntar nombre
+prompt_new_tab_name = false
+# Título de la pestaña de Windows Terminal
+window_title = "{workspace} · {pane}"
+
+[ui.sidebar.agents]
+# Claude: segunda línea = el título que Claude escribe (resumen de lo que hace)
+[ui.sidebar.agents.rows_by_agent]
+claude = [["state_icon", "workspace", "tab"], ["terminal_title_stripped"]]
+
+[ui.toast]
+# Notificación de Windows cuando un agente en otro espacio se bloquea o termina
+delivery = "system"
+delay_seconds = 1
+
+[ui.sound]
+enabled = true
+
+[session]
+resume_agents_on_restore = true

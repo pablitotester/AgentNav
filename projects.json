@@ -1,0 +1,6 @@
+[
+  { "name": "HerdrTest",  "path": "C:\\HerdrTest",          "agents": ["prueba"],     "kind": "claude" },
+  { "name": "MiniZelda",  "path": "C:\\MiniZelda",          "agents": ["curso"],      "kind": "claude" },
+  { "name": "RemoteDesk", "path": "C:\\RemoteDesk",         "agents": ["remotedesk"], "kind": "claude" },
+  { "name": "Nevatars",   "path": "C:\\Nevatars\\nevatars", "agents": ["qa"],         "kind": "claude" }
+]

@@ -1,0 +1,253 @@
+<title>AgentNav</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap">
+<style>
+/* Layout: single reading column, 820px, with full-width command tables; a console-style mock in the middle. */
+:root {
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --fg: #1f2320;
+  --muted: #5d645f;
+  --line: #d9d8d0;
+  --accent: #1f6f5c;
+  --accent-soft: #e2f0eb;
+  --idle: #2f7fb8;
+  --working: #b8860b;
+  --blocked: #c0392b;
+  --done: #3a8f4a;
+  --code-bg: #eeede7;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #171a18; --surface: #1f2321; --fg: #e8e7e0; --muted: #a2a89f; --line: #353a36;
+    --accent: #6fc4a8; --accent-soft: #223a32; --idle: #6fb3e0; --working: #e0b24a; --blocked: #ef6b5c; --done: #7cc98a;
+    --code-bg: #23272a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #171a18; --surface: #1f2321; --fg: #e8e7e0; --muted: #a2a89f; --line: #353a36;
+  --accent: #6fc4a8; --accent-soft: #223a32; --idle: #6fb3e0; --working: #e0b24a; --blocked: #ef6b5c; --done: #7cc98a;
+  --code-bg: #23272a; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 64px; }
+main { max-width: 820px; margin: 0 auto; }
+header.top { padding-block: 48px 24px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(34px, 6vw, 48px); line-height: 1.05; margin: 8px 0 12px; text-wrap: balance; }
+.lede { font-size: 18px; color: var(--muted); max-width: 60ch; margin: 0; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 26px; margin: 48px 0 12px; text-wrap: balance; }
+h3 { font-size: 17px; font-weight: 600; margin: 28px 0 8px; }
+p { max-width: 68ch; margin: 0 0 14px; }
+ul, ol { max-width: 68ch; padding-left: 22px; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code { font-family: var(--font-mono); font-size: .92em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+pre { font-family: var(--font-mono); font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; margin: 0 0 16px; }
+pre code { background: none; padding: 0; font-size: inherit; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 0 0 16px; max-width: 68ch; }
+.note p { margin: 0; }
+.warn { border-left-color: var(--blocked); background: transparent; border: 1px solid var(--line); border-left: 3px solid var(--blocked); }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 0 0 20px; }
+.tablewrap { overflow-x: auto; margin: 0 0 20px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+td code { white-space: nowrap; }
+td.wrap code { white-space: normal; }
+.pill { display: inline-block; font-family: var(--font-mono); font-size: 12px; padding: 1px 8px; border-radius: 999px; color: #fff; }
+.pill.idle { background: var(--idle); } .pill.working { background: var(--working); } .pill.blocked { background: var(--blocked); } .pill.done { background: var(--done); }
+.arch { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 0 0 20px; }
+.arch .box { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+.arch .box b { display: block; font-size: 15px; }
+.arch .box span { color: var(--muted); font-size: 14px; }
+.arch .link { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-left: 14px; }
+.mock { font-family: var(--font-mono); font-size: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 0 0 16px; }
+.mock .bar { background: var(--code-bg); padding: 6px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.mock .cols { display: grid; grid-template-columns: 220px 1fr; }
+.mock .side { border-right: 1px solid var(--line); padding: 8px 0; }
+.mock .side div { padding: 4px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mock .side .h { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding-top: 8px; }
+.mock .side .sel { background: var(--accent-soft); }
+.mock .side .sub { padding-left: 24px; color: var(--muted); }
+.mock .panes { min-width: 0; display: grid; grid-template-rows: auto 1fr; }
+.mock .tabs { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.mock .tabs b { color: var(--fg); font-weight: 500; }
+.mock .pane { padding: 10px 12px; color: var(--muted); white-space: pre-wrap; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.dot.idle { background: var(--idle); } .dot.working { background: var(--working); } .dot.blocked { background: var(--blocked); } .dot.done { background: var(--done); }
+@media (max-width: 560px) { .mock .cols { grid-template-columns: 1fr; } .mock .side { border-right: 0; border-bottom: 1px solid var(--line); } }
+.stages { display: grid; gap: 10px; margin: 0 0 20px; }
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+.stage b { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
+.stage p { margin: 4px 0 0; }
+.src { color: var(--muted); font-size: 14px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<main>
+<header class="top">
+  <div class="eyebrow">Diseño v2 · 28 de octubre de 2026 · para Pablo</div>
+  <h1>AgentNav</h1>
+  <p class="lede">Navegación y diseño exactamente los de Herdr. Lo propio es lo que Herdr no trae: estado exacto de cada Claude, un registro de proyectos, y un arranque de un solo comando.</p>
+</header>
+
+<div class="note warn"><p><b>Lo que cambia respecto de la v1.</b> Pediste que la navegación y el diseño sean idénticos a Herdr. La interfaz de Herdr son sus paneles, y cada panel es la pantalla del agente dibujada por un emulador de terminal propio. Una copia idéntica obliga a reescribir ese emulador, que es justo la parte que en la v1 habíamos decidido no copiar. Así que la v2 no copia la interfaz: <b>la usa</b>. Herdr es la pantalla, configurado a tu gusto, y AgentNav es la capa de alrededor. Si más adelante querés tocar la interfaz misma, el plan B es un fork privado, al final del doc.</p></div>
+
+<h2>Qué queda igual a Herdr, por construcción</h2>
+<p>Todo lo que ves y tocás. La barra lateral con espacios y agentes, la fila de pestañas, los paneles partidos, la tecla prefijo, el selector "ir a", el mouse. No hay nada que mantener acá porque es el binario de Herdr sin modificar.</p>
+<div class="mock">
+  <div class="bar"><span>pablo-pc: Nevatars</span><span>ctrl+b ? ayuda · ctrl+b g ir a · ctrl+b q soltar</span></div>
+  <div class="cols">
+    <div class="side">
+      <div class="h">Espacios</div>
+      <div class="sel"><span class="dot blocked"></span>Nevatars</div>
+      <div class="sub">main · 3 cambios</div>
+      <div><span class="dot working"></span>MiniZelda</div>
+      <div><span class="dot idle"></span>HerdrTest</div>
+      <div class="h">Agentes</div>
+      <div><span class="dot blocked"></span>Nevatars · qa</div>
+      <div class="sub">pide permiso: Bash(adb logcat)</div>
+      <div><span class="dot working"></span>Nevatars · hub</div>
+      <div class="sub">"cerrá el tren 93"</div>
+      <div><span class="dot done"></span>MiniZelda · curso</div>
+    </div>
+    <div class="panes">
+      <div class="tabs"><b>1 qa</b> · 2 hub · 3 shell</div>
+      <div class="pane">❯ Claude Code en C:\Nevatars\nevatars
+● Pablo, necesito permiso para correr:
+  Bash(adb logcat -b crash -d)
+  ❯ Yes   No</div>
+    </div>
+  </div>
+</div>
+
+<h3>Las teclas, tal cual vienen</h3>
+<div class="tablewrap"><table>
+<tr><th>Para</th><th>Teclas</th></tr>
+<tr><td>Prefijo</td><td><code>ctrl+b</code>, se suelta, y después la letra</td></tr>
+<tr><td>Ir a cualquier agente o terminal</td><td><code>ctrl+b g</code> · lista por espacio · <code>/</code> busca por nombre, pestaña, espacio, rama o ruta · <code>b</code> <code>w</code> <code>i</code> <code>d</code> filtran bloqueados, trabajando, libres, terminados · <code>a</code> todos</td></tr>
+<tr><td>Cambiar de espacio</td><td><code>ctrl+b w</code> selector · <code>ctrl+b shift+n</code> nuevo · <code>ctrl+b shift+w</code> renombrar · <code>ctrl+b shift+d</code> cerrar</td></tr>
+<tr><td>Pestañas</td><td><code>ctrl+b c</code> nueva · <code>ctrl+b n</code> / <code>p</code> siguiente, anterior · <code>ctrl+b 1..9</code> directo · <code>ctrl+b shift+t</code> renombrar · <code>ctrl+b shift+x</code> cerrar</td></tr>
+<tr><td>Paneles</td><td><code>ctrl+b v</code> partir a la derecha · <code>ctrl+b -</code> partir abajo · <code>ctrl+b h/j/k/l</code> foco · <code>ctrl+b z</code> zoom · <code>ctrl+b r</code> redimensionar · <code>ctrl+b x</code> cerrar</td></tr>
+<tr><td>Barra lateral</td><td><code>ctrl+b b</code> mostrar u ocultar · <code>ctrl+b o</code> ir al agente que avisó</td></tr>
+<tr><td>Soltar la sesión sin matar nada</td><td><code>ctrl+b q</code></td></tr>
+<tr><td>Ver todas las teclas</td><td><code>ctrl+b F1</code> (en Herdr es <code>?</code>, que el teclado en español no entrega)</td></tr>
+<tr><td>Mouse</td><td>click en paneles, pestañas, espacios y agentes · arrastrar bordes · click derecho para menús · arrastrar para seleccionar y copiar</td></tr>
+</table></div>
+
+<h2>Lo propio: tres piezas chicas</h2>
+<div class="arch">
+  <div class="box"><b>1 · Estado exacto por hooks de Claude Code</b><span>Hoy Herdr adivina idle, working y blocked leyendo la pantalla. Herdr acepta que una fuente externa le imponga el estado con <code>pane report-agent</code>, y lo verifiqué: el panel pasó a bloqueado al instante y volvió a "done" al reportar idle. Un hook de Claude por cada evento hace ese reporte y la barra lateral de Herdr muestra la verdad.</span></div>
+  <div class="box"><b>2 · Registro de proyectos y selector dentro de Herdr</b><span>Herdr tiene espacios pero no "proyectos guardados". Un <code>projects.json</code> con nombre y ruta, y un selector que se abre como popup de Herdr con una tecla propia, lista los proyectos y abre el elegido como espacio nuevo con un Claude adentro. Mismo look, porque es un popup de Herdr.</span></div>
+  <div class="box"><b>3 · Arranque de un comando</b><span><code>agentnav</code> en cualquier consola: levanta el servidor si no corre, abre una pestaña de Windows Terminal con <code>herdr</code> enganchado, y listo. Y un acceso directo al inicio de Windows para que el servidor ya esté arriba cuando prendés la PC.</span></div>
+</div>
+
+<h2>Pieza 1 · el hook de estado</h2>
+<p>Herdr ya te instaló <code>~/.claude/hooks/herdr-agent-state.ps1</code> (versión 11) para <code>SessionStart</code>. Solo reporta el id de sesión, y su cabecera pide que los hooks propios vayan al lado, no adentro. El nuestro es <code>~/.claude/hooks/agentnav-state.ps1</code>, mismo patrón, y se registra en <code>~/.claude/settings.json</code> junto al de Herdr.</p>
+<p>Lo importante: dentro de un panel de Herdr cada proceso recibe <code>HERDR_ENV=1</code> y <code>HERDR_PANE_ID</code>. El hook ya sabe en qué panel está. No hace falta cruzar ids de sesión ni carpetas, y fuera de Herdr el hook sale sin hacer nada.</p>
+<div class="tablewrap"><table>
+<tr><th>Evento de Claude</th><th>Comando que corre el hook</th></tr>
+<tr><td><code>UserPromptSubmit</code></td><td class="wrap"><code>herdr pane report-agent $env:HERDR_PANE_ID --source agentnav --agent claude --state working --message "&lt;prompt recortado a 80&gt;" --seq &lt;ms&gt;</code></td></tr>
+<tr><td><code>Notification</code> con <code>permission_prompt</code></td><td class="wrap"><code>… --state blocked --message "pide permiso: &lt;herramienta&gt;"</code></td></tr>
+<tr><td><code>Notification</code> con <code>idle_prompt</code></td><td class="wrap"><code>… --state idle</code></td></tr>
+<tr><td><code>Stop</code></td><td class="wrap"><code>… --state idle</code>. Herdr lo muestra como <span class="pill done">done</span> hasta que entrás al panel, igual que hoy.</td></tr>
+<tr><td><code>SessionEnd</code></td><td class="wrap"><code>herdr pane release-agent $env:HERDR_PANE_ID --source agentnav --agent claude</code>, y Herdr vuelve a su detección por pantalla para lo que quede en ese panel.</td></tr>
+</table></div>
+<p>El <code>--seq</code> es el reloj en milisegundos, como hace el hook de Herdr, para que un reporte viejo nunca pise a uno nuevo. Cada hook termina en menos de un segundo y sale con 0 pase lo que pase.</p>
+<pre><code>// fragmento de ~/.claude/settings.json (se suma al SessionStart que Herdr ya puso)
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "timeout": 10,
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\pablo\\.claude\\hooks\\agentnav-state.ps1\" prompt" }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "timeout": 10,
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\pablo\\.claude\\hooks\\agentnav-state.ps1\" stop" }] }],
+"SessionEnd":       [{ "hooks": [{ "type": "command", "timeout": 10,
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\pablo\\.claude\\hooks\\agentnav-state.ps1\" end" }] }],
+"Notification":     [{ "matcher": "permission_prompt|idle_prompt", "hooks": [{ "type": "command", "timeout": 10,
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\pablo\\.claude\\hooks\\agentnav-state.ps1\" notify" }] }]</code></pre>
+
+<h2>Pieza 2 · proyectos y el selector</h2>
+<h3>Registro · <code>C:\AgentNav\projects.json</code></h3>
+<pre><code>[
+  { "name": "Nevatars",   "path": "C:\\Nevatars\\nevatars", "agents": ["qa", "hub"] },
+  { "name": "MiniZelda",  "path": "C:\\MiniZelda",          "agents": ["curso"] },
+  { "name": "RemoteDesk", "path": "C:\\RemoteDesk",         "agents": ["rd"] }
+]</code></pre>
+<p><code>agents</code> es cuántos Claude abre de entrada y con qué nombre, uno por pestaña. Para Nevatars arrancás con dos y después partís lo que quieras con <code>ctrl+b v</code>.</p>
+
+<h3>El selector, como popup de Herdr</h3>
+<p>Herdr permite teclas propias que abren un popup modal con un comando adentro. Registramos una en el <code>config.toml</code> de Herdr:</p>
+<pre><code>[[keys.command]]
+key = "prefix+alt+p"
+type = "popup"
+command = "py -I C:\\AgentNav\\agentnav.py pick"
+width = "70%"
+height = "60%"</code></pre>
+<p><code>agentnav.py pick</code> lista los proyectos con flechas y Enter, marca los que ya tienen espacio abierto, y para el elegido hace lo que haría a mano:</p>
+<ol>
+  <li><code>herdr workspace create --cwd &lt;ruta&gt; --label &lt;nombre&gt;</code> → toma <code>result.root_pane.pane_id</code>.</li>
+  <li>Para el primer agente: <code>herdr agent start &lt;nombre&gt; --kind claude --pane &lt;id&gt; --timeout 90000</code>. Para los demás: <code>herdr tab create --workspace &lt;wid&gt; --cwd &lt;ruta&gt; --label &lt;nombre&gt; --no-focus</code> y después <code>agent start</code> en el panel que devuelve.</li>
+  <li>Si el espacio ya existía, solo <code>herdr workspace focus &lt;wid&gt;</code>.</li>
+</ol>
+<p>Si <code>agent start</code> devuelve <code>agent_not_ready</code> es el diálogo de confianza de carpeta de Claude; el popup se cierra y lo respondés vos en el panel, que ya está en foco.</p>
+
+<h2>Pieza 3 · arranque</h2>
+<pre><code>agentnav              # servidor arriba si hace falta + pestaña de WT con herdr enganchado
+agentnav open Nevatars  # lo mismo que el popup, desde una consola
+agentnav list         # proyectos y agentes con estado, en texto, para scripts o para mí</code></pre>
+<p>Es un <code>agentnav.ps1</code> en <code>C:\AgentNav</code> con un alias en tu perfil de PowerShell. La pestaña se abre con <code>wt -w 0 new-tab --title Herdr powershell -NoExit -Command herdr</code>, que es exactamente lo que usé hoy para abrirte la primera. El acceso directo al inicio corre <code>herdr server</code> oculto.</p>
+
+<h2>Configuración de Herdr que forma parte del diseño</h2>
+<p>Todo esto va en <code>%APPDATA%\herdr\config.toml</code>, que hoy no existe. Son los valores de Herdr, no código nuestro, y cada uno está documentado en <code>herdr --default-config</code>.</p>
+<div class="tablewrap"><table>
+<tr><th>Clave</th><th>Valor</th><th>Por qué</th></tr>
+<tr><td><code>keys.help</code></td><td><code>"prefix+f1"</code></td><td>Con teclado en español, el <code>?</code> después del prefijo no se reconoce (las letras sí). Verificado 28/10 con F12 como prefijo: <code>c</code> y <code>b</code> responden, <code>?</code> no. La ayuda queda en F1. Si <code>ctrl+b</code> molesta porque Claude Code lo usa para mandar tareas a segundo plano, <code>prefix = "f12"</code> funciona.</td></tr>
+<tr><td><code>theme.name</code></td><td><code>"catppuccin"</code></td><td>El que ya viste. Alternativas listas: tokyo-night, nord, gruvbox, one-dark.</td></tr>
+<tr><td><code>ui.agent_panel_sort</code></td><td><code>"priority"</code></td><td>La lista de agentes se ordena como cola de atención: bloqueados primero.</td></tr>
+<tr><td><code>ui.status_indicators</code></td><td><code>"symbols"</code></td><td>Glifos distintos por estado en vez de solo puntos de color.</td></tr>
+<tr><td><code>ui.sidebar.agents.rows_by_agent.claude</code></td><td><code>[["state_icon","workspace","tab"],["terminal_title_stripped"]]</code></td><td>La segunda línea muestra el título que Claude escribe, que es un resumen de lo que está haciendo.</td></tr>
+<tr><td><code>ui.toast.delivery</code></td><td><code>"system"</code></td><td>Notificación de Windows cuando un agente en otro espacio se bloquea o termina.</td></tr>
+<tr><td><code>ui.sound.enabled</code></td><td><code>true</code></td><td>Sonido en el mismo caso. Ya viene así.</td></tr>
+<tr><td><code>ui.prompt_new_tab_name</code></td><td><code>false</code></td><td>Que <code>ctrl+b c</code> abra la pestaña sin preguntar nombre.</td></tr>
+<tr><td><code>ui.window_title</code></td><td><code>"{workspace} · {pane}"</code></td><td>La pestaña de Windows Terminal dice en qué proyecto estás.</td></tr>
+<tr><td><code>terminal.default_shell</code></td><td><code>"pwsh"</code></td><td>Paneles con PowerShell 7 en vez de 5.1. Opcional.</td></tr>
+<tr><td><code>session.resume_agents_on_restore</code></td><td><code>true</code></td><td>Si el servidor se reinicia, cada Claude vuelve a su conversación con el id que reportó el hook. Ya viene así.</td></tr>
+</table></div>
+
+<h2>Etapas</h2>
+<div class="stages">
+  <div class="stage"><b>E0 · config.toml · 30 min · HECHA 28/10</b><p>La tabla de arriba, tal cual, aplicada con <code>herdr server reload-config</code> sin diagnósticos. Backup en <code>config.toml.bak-2026-10-28</code>.</p></div>
+  <div class="stage"><b>E1 · hook de estado · 1 h · HECHA 28/10</b><p><code>agentnav-state.ps1</code> y sus entradas en <code>settings.json</code> (backup <code>settings.json.bak-2026-10-28</code>). Probado con payloads falsos (blocked, working, done, subagente ignorado, fuera de Herdr ignorado) y con un Claude real dentro de Herdr: el panel pasó a working y a done por el hook. Traza en <code>%LOCALAPPDATA%\AgentNav\hook.log</code>, una línea por evento, tope 200 líneas. El bloqueo por permiso no se pudo ver en vivo porque tu Claude corre en modo auto y no pide permisos.</p></div>
+  <div class="stage"><b>E2 · proyectos, selector y arranque · HECHA 28/10</b><p>Todo en un solo <code>C:\AgentNav\agentnav.py</code> (stdlib, Python 3.14): <code>list</code>, <code>open &lt;nombre&gt;</code>, <code>pick</code> (el popup), <code>up</code>, <code>attach</code>, y sin argumentos levanta el servidor y abre la pestaña. <code>agentnav.ps1</code> lo envuelve y hay alias <code>agentnav</code> en los perfiles de pwsh y de PowerShell 5.1. Popup registrado en <code>config.toml</code> como <code>prefix+alt+p</code>. Arranque automático: <code>Herdr server.vbs</code> en la carpeta Inicio, sin ventana; un segundo servidor termina solo con "already running" (verificado). Probado: <code>open MiniZelda</code> creó el espacio, arrancó el Claude y reportó el diálogo de confianza; volver a abrirlo enfoca en vez de duplicar; <code>list</code> muestra estados con glifos (la consola se pasa a UTF-8 desde el script).</p></div>
+  <div class="stage"><b>E3 · uso real · unos días</b><p>Primero MiniZelda y RemoteDesk. Las terminales de QA de Nevatars recién cuando vos digas.</p></div>
+</div>
+
+<h2>Revisión a fondo · 28/10</h2>
+<p>Dos revisores independientes, uno sobre <code>agentnav.py</code> y otro sobre el hook, la config, el arranque y los perfiles. Todo lo confirmado se aplicó y se re-probó el mismo día.</p>
+<ul>
+  <li><b>agentnav.py</b>: ocho errores en caminos de borde (timeouts y fallos de proceso sin traceback, espacio sin etiqueta, <code>projects.json</code> inválido, nombre vacío o ambiguo en <code>open</code>, cursor del selector tras recargar, respuesta no JSON de la CLI, fallo parcial al abrir). Ahora <code>open</code> sobre un proyecto abierto repone los agentes que falten. Menos llamadas a Herdr por refresco del popup, timeout corto en el popup porque es modal, y la consola recupera su code page al salir.</li>
+  <li><b>Hook</b>: guardado con BOM (PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252 y rompía los acentos del mensaje), <code>--message=texto</code> como un solo token (un prompt que empieza con guión perdía el reporte), traza siempre de una línea con el id de sesión, recorte del log sólo al pasar de 400 líneas.</li>
+  <li><b>Verificado sin cambios</b>: cada clave de <code>config.toml</code> contra <code>herdr --default-config</code>, el <code>.vbs</code> de inicio (sigue la junction <code>current</code>, sin ventana), los alias en ambos perfiles con política RemoteSigned, y que el hook nunca escribe en stdout ni se acerca a los 10 s.</li>
+</ul>
+<h3>Límites conocidos que no son bugs</h3>
+<ul>
+  <li>Claude Code no avisa cuando concedés un permiso: el panel queda en <span class="pill blocked">blocked</span> hasta el próximo <code>Stop</code>. Arreglarlo pide un hook en cada llamada a herramienta, unos 300 ms cada una; con tu Claude en modo auto casi nunca hay permisos, así que no vale la pena.</li>
+  <li><code>Stop</code> no dispara si interrumpís un turno con Esc: queda <span class="pill working">working</span> hasta el <code>idle_prompt</code>, alrededor de un minuto, o el siguiente prompt.</li>
+  <li>Al cerrar un panel desde Herdr, el <code>SessionEnd</code> llega tarde y el panel ya no existe. Inofensivo; la traza lo marca como "pane ya cerrado (ok)".</li>
+  <li>El instalador pone en el PATH la carpeta de la versión, no <code>current</code>; <code>herdr update</code> la actualiza. El <code>.vbs</code> y el script usan <code>current</code>, que es una junction y no se desactualiza.</li>
+</ul>
+
+<h2>Plan B · fork privado, solo si hace falta tocar la interfaz</h2>
+<p>Herdr es Apache 2.0, se puede forkear en privado sin pedir permiso. Lo que implica: instalar Rust y las Visual Studio Build Tools (hoy no hay ni <code>cargo</code> en esta PC), compilar un proyecto de 1.900 commits con un emulador de terminal vendorizado, y volver a aplicar cada cambio nuestro en cada versión nueva. El proyecto cierra automáticamente los pull requests no solicitados, así que nada volvería río arriba. Vale la pena solo si aparece algo concreto de la interfaz que no se arregla con el <code>config.toml</code>. Hoy no hay nada en esa lista.</p>
+
+<h2>Qué verifiqué hoy antes de escribir esto</h2>
+<ul class="src">
+  <li><code>herdr pane report-agent w1:p1 --source agentnav --agent claude --state blocked</code> cambió el estado del panel al instante; reportar idle después lo dejó en done; <code>release-agent</code> lo devolvió a la detección por pantalla.</li>
+  <li>El hook que Herdr instaló en <code>~/.claude/hooks/herdr-agent-state.ps1</code> usa <code>HERDR_ENV</code> y <code>HERDR_PANE_ID</code> del entorno del panel y pide que los hooks propios vayan al lado. Nuestro hook copia ese patrón.</li>
+  <li><code>herdr --default-config</code> lista cada tecla y cada clave de la tabla de configuración, incluido <code>[[keys.command]]</code> con <code>type = "popup"</code>.</li>
+  <li>La página de teclado de Herdr documenta el selector <code>ctrl+b g</code> con búsqueda y filtros por estado.</li>
+  <li>Claude Code documenta <code>UserPromptSubmit</code>, <code>Stop</code>, <code>SessionEnd</code> y <code>Notification</code> con matcher por tipo, todos con <code>session_id</code> y <code>cwd</code>.</li>
+  <li>No hay toolchain de Rust en esta PC, lo que ubica al fork como plan B y no como camino.</li>
+</ul>
+</main>

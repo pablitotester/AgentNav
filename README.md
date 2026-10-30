@@ -36,6 +36,7 @@ El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee U
 agentnav                     servidor arriba si hace falta + pestaña de Windows Terminal enganchada
 agentnav list                proyectos, cuáles están abiertos, rama y cambios, cada agente con su estado
 agentnav open <nombre>       abre el proyecto como espacio con sus agentes, o lo enfoca y repone los que falten
+agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su Claude
 agentnav close <nombre>      cierra el espacio; a los Claude les manda /exit antes
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas

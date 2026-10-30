@@ -5,6 +5,8 @@ Uso:
   agentnav                 levanta el servidor de Herdr si hace falta y abre una pestaña de Windows Terminal enganchada
   agentnav list            proyectos registrados, cuáles están abiertos y el estado de cada agente
   agentnav open <nombre>   abre el proyecto como espacio de Herdr con sus agentes adentro (o lo enfoca si ya está)
+  agentnav new <nombre> [ruta]
+                           crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre
   agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
@@ -225,6 +227,55 @@ def add_project(name, path):
         raise AgentNavError(f"ya hay un proyecto llamado {name}")
     raw.append({"name": name, "path": path, "agents": [agent_name(name, set())], "kind": "claude", "continue": True})
     _write_projects_raw(raw)
+
+
+def new_project_base():
+    """Dónde nacen los proyectos nuevos: el `new_cwd` fijo de la config de Herdr si lo hay, si no C:\\."""
+    cfg = os.path.join(os.environ.get("APPDATA", ""), "herdr", "config.toml")
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r'\s*new_cwd\s*=\s*"([^"]*)"', line)
+                if m:
+                    v = m.group(1).replace("\\\\", "\\")
+                    if v == "home":
+                        return USERPROFILE
+                    if v not in ("follow", "current", ""):
+                        return os.path.expanduser(v)
+    except OSError:
+        pass
+    return "C:\\"
+
+
+def cmd_new(rest):
+    """agentnav new <nombre> [ruta]: crea la carpeta, registra el proyecto y lo abre con su Claude."""
+    parts = rest.split(None, 1)
+    if not parts:
+        raise AgentNavError("uso: agentnav new <nombre> [ruta]")
+    name = parts[0].strip()
+    if re.search(r'[\\/:*?"<>|]', name):
+        raise AgentNavError(f"el nombre no puede llevar \\ / : * ? \" < > |  ({name})")
+    path = os.path.abspath(parts[1].strip().strip('"')) if len(parts) > 1 else os.path.join(new_project_base(), name)
+    projects = load_projects()
+    taken = next((p for p in projects if _norm_path(p["path"]) == _norm_path(path)), None)
+    if taken:
+        raise AgentNavError(f"{path} ya está registrada como {taken['name']}")
+    if os.path.isfile(path):
+        raise AgentNavError(f"{path} es un archivo")
+    if os.path.isdir(path):
+        print(f"{name}: la carpeta ya existía, la registro: {path}")
+    else:
+        try:
+            os.makedirs(path)
+        except OSError as e:
+            raise AgentNavError(f"no pude crear {path}: {e}")
+        print(f"{name}: carpeta creada en {path}")
+    add_project(name, path)
+    print(f"{name}: registrado en {PROJECTS_PATH}")
+    open_project(_project_or_die(name))
+    if not inside_herdr():
+        attach()
+    return 0
 
 
 def find_project(projects, name):
@@ -1387,6 +1438,8 @@ def main(argv):
         return 0
     if cmd == "app":
         return cmd_app()
+    if cmd in ("new", "nuevo"):
+        return cmd_new(rest)
     print(__doc__)
     return 0 if cmd in ("help", "-h", "--help") else 2
 

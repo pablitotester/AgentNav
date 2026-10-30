@@ -1602,17 +1602,50 @@ def herdr_is_ours():
     return (True, f"build del fork {marker.get('tag')}") if same else (False, f"herdr.exe no coincide con el marcador {marker.get('tag')}: lo pisó herdr update")
 
 
-def _wait_herdr_gone(timeout=25.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        server, clients = herdr_processes()
-        if not server and not clients:
+def _herdr_pids():
+    """PIDs de todos los herdr.exe vivos, con tasklist (sin leer memoria de procesos que están muriendo)."""
+    try:
+        cp = subprocess.run(["tasklist", "/FI", "IMAGENAME eq herdr.exe", "/FO", "CSV", "/NH"], capture_output=True,
+                            text=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    out = []
+    for line in cp.stdout.splitlines():
+        parts = [x.strip('"') for x in line.split('","')]
+        if len(parts) >= 2 and parts[0].lower() == "herdr.exe" and parts[1].isdigit():
+            out.append(int(parts[1]))
+    return out
+
+
+def _stop_all_herdr(say=print, timeout=30.0):
+    """Para el servidor y cierra también los clientes. Un cliente vivo retiene herdr.exe y, apenas ve caer al servidor,
+    relanza uno nuevo desde su propia carpeta: por eso los dos primeros intentos de hoy no pudieron copiar el exe."""
+    if server_running():
+        say("parando el servidor de Herdr (los Claude se reanudan al volver)…")
+        try:
+            run("server", "stop", timeout=30)
+        except AgentNavError as e:
+            say(f"server stop: {e}")
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        pids = _herdr_pids()
+        if not pids:
             return True
+        if time.monotonic() - t0 > 3:  # 3 s para que salgan por las buenas; después, a la fuerza
+            for pid in pids:
+                try:
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=15,
+                                   creationflags=CREATE_NO_WINDOW)
+                    say(f"cerrado herdr.exe {pid}")
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
         time.sleep(0.5)
     return False
 
 
 def cmd_herdr_sync(argv, say=print):
+    import faulthandler
+    faulthandler.enable()
     repo = fork_repo()
     if not repo:
         raise AgentNavError("falta settings.json → herdr_fork.repo (por ejemplo \"pablo/herdr\")")
@@ -1665,10 +1698,7 @@ def cmd_herdr_sync(argv, say=print):
     if ours is False and not os.path.isfile(official):
         shutil.copy2(exe, official)
         say(f"oficial guardado en {official}")
-    if server_running():
-        say("parando el servidor de Herdr (los Claude se reanudan al volver)…")
-        run("server", "stop", timeout=30)
-    if not _wait_herdr_gone():
+    if not _stop_all_herdr(say):
         raise AgentNavError("todavía hay procesos herdr.exe vivos; cerrá la pestaña de Herdr y repetí")
     last = None
     for _ in range(10):

@@ -8,6 +8,8 @@ Uso:
   agentnav new <nombre> [ruta]
                            crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre
   agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
+  agentnav tab             pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente
+                           (es lo que corre ctrl+b c; la pestaña pelada de Herdr queda en ctrl+b shift+c)
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
@@ -997,6 +999,67 @@ def cmd_close(name):
     return 0
 
 
+def _tab_source(snap, projects):
+    """Desde dónde se pidió la pestaña: espacio y panel del entorno de Herdr (si corre dentro de un panel) o los
+    enfocados en la interfaz (cuando lo dispara la tecla). Devuelve (wid, espacio, panel, proyecto registrado o None)."""
+    wid = os.environ.get("HERDR_WORKSPACE_ID") or snap.get("focused_workspace_id")
+    pid = os.environ.get("HERDR_PANE_ID") or snap.get("focused_pane_id")
+    if not wid:
+        raise AgentNavError("no hay ningún espacio enfocado donde abrir la pestaña")
+    ws = next((w for w in snap["workspaces"] if w.get("workspace_id") == wid), None)
+    if not ws:
+        raise AgentNavError(f"el espacio {wid} ya no existe")
+    pane = next((x for x in snap.get("panes", []) if x.get("pane_id") == pid), None) or {}
+    project = next((p for p in projects if p["name"].lower() == ws_label(ws)), None)
+    return wid, ws, pane, project
+
+
+def _tab_agent(snap, wid, pane, project):
+    """Qué va en la pestaña nueva: el agente del panel de origen; si ese panel es un shell, el último agente vivo del
+    espacio; si no hay ninguno, el agente registrado del proyecto; y si tampoco, un shell. Devuelve None para shell."""
+    live = [a for a in snap["agents"] if a.get("workspace_id") == wid]
+    src = next((a for a in live if a.get("pane_id") == pane.get("pane_id")), None)
+    if not src and live:
+        src = max(live, key=lambda a: a.get("state_change_seq") or 0)
+    registered = [a for a in (project["agents"] if project else []) if a["kind"] != SHELL_KIND]
+    if src:
+        kind = src.get("agent") or "claude"
+        base = re.sub(r"-\d+$", "", src.get("name") or "") or kind
+        # Los argumentos los hereda del agente registrado con ese nombre (o del primero de ese tipo), si lo hay.
+        reg = next((a for a in registered if a["name"] == base), None) or next((a for a in registered if a["kind"] == kind), None)
+        return {"name": base, "kind": kind, "args": list(reg["args"]) if reg else [], "continue": False}
+    if registered:
+        return dict(registered[0], **{"continue": False})
+    return None
+
+
+def cmd_tab(say=print, start_timeout_ms=90000):
+    """agentnav tab: pestaña nueva en el espacio actual, en la carpeta del panel de origen y con el mismo agente.
+    Un Claude nuevo arranca una conversación nueva (nunca --continue: la viva ya está en la otra pestaña)."""
+    try:
+        snap = snapshot()
+        wid, ws, pane, project = _tab_source(snap, load_projects())
+        path = pane.get("cwd") or ""
+        if not os.path.isdir(path):
+            path = project["path"] if project and os.path.isdir(project["path"]) else new_project_base()
+        a = _tab_agent(snap, wid, pane, project)
+        taken = {x.get("name") for x in snap["agents"] if x.get("name")}
+        label = agent_name(a["name"], taken) if a else os.path.basename(path.rstrip("\\/")) or "shell"
+        say(f"{ws.get('label') or wid}: pestaña {label} en {path}")
+        t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--focus")
+        if a is None:
+            return 0
+        a = dict(a, name=label)
+        return 0 if _start_herdr_agent(a, path, t["root_pane"]["pane_id"], start_timeout_ms, say, set(), True) else 1
+    except AgentNavError as e:
+        # Desde la tecla nadie ve la consola: el error va como aviso de Herdr.
+        try:
+            run("notification", "show", "AgentNav", "--body", str(e)[:200], "--sound", "none", timeout=5)
+        except AgentNavError:
+            pass
+        raise
+
+
 def cmd_recent():
     for r in recent_projects(load_projects(), limit=20):
         print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['when']))}  {r['path']}")
@@ -1161,6 +1224,8 @@ def cmd_doctor():
         with open(cfg_path, encoding="utf-8") as f:
             cfg = f.read()
         check("agentnav.py pick" in cfg, "config.toml: popup del selector (prefix+alt+p)")
+        check("agentnav.py tab" in cfg and 'new_tab = "prefix+shift+c"' in cfg,
+              "config.toml: ctrl+b c abre la pestaña de AgentNav (misma carpeta, mismo agente)")
         check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
         check("[session]" in cfg and "resume_agents_on_restore = true" in cfg, "config.toml: agentes se reanudan al restaurar")
     except OSError:
@@ -1418,6 +1483,8 @@ def main(argv):
         return cmd_close(rest)
     if cmd == "pick":
         return cmd_pick()
+    if cmd in ("tab", "pestaña", "pestana"):
+        return cmd_tab()
     if cmd in ("recent", "recientes"):
         return cmd_recent()
     if cmd in ("hoy", "today", "diario"):

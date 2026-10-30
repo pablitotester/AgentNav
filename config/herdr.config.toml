@@ -19,6 +19,14 @@ new_cwd = "C:\\"
 # La ayuda va en F1. Si ctrl+b molesta porque Claude Code lo usa para mandar tareas a segundo plano, cambiar a prefix = "f12".
 prefix = "ctrl+b"
 help = "prefix+f1"
+# 30/10: ctrl+b c = pestaña de AgentNav: misma carpeta que el panel actual y el mismo agente
+# (si venías en un Claude, otro Claude con conversación nueva). La pestaña pelada de Herdr (shell en new_cwd) pasa a ctrl+b shift+c.
+new_tab = "prefix+shift+c"
+
+[[keys.command]]
+key = "prefix+c"
+type = "shell"
+command = "py -I C:\\AgentNav\\agentnav.py tab"
 
 # AgentNav E2: selector de proyectos como popup de Herdr (ctrl+b, soltar, alt+p)
 [[keys.command]]

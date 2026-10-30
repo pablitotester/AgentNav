@@ -38,6 +38,7 @@ agentnav list                proyectos, cuáles están abiertos, rama y cambios,
 agentnav open <nombre>       abre el proyecto como espacio con sus agentes, o lo enfoca y repone los que falten
 agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su Claude
 agentnav close <nombre>      cierra el espacio; a los Claude les manda /exit antes
+agentnav tab                 pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente (ctrl+b c)
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
@@ -47,6 +48,8 @@ agentnav app                 lo que corre el acceso directo: servidor arriba, ve
 ```
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
+
+`ctrl+b c` abre la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada de Herdr (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
 
 ## projects.json
 

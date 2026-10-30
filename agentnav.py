@@ -14,6 +14,7 @@ Uso:
   agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
+  agentnav app             lo que corre el acceso directo del escritorio: servidor arriba y la ventana de Herdr al frente
 
 Registro: C:\\AgentNav\\projects.json   (nombre, ruta, agentes a abrir)
 Ajustes:  C:\\AgentNav\\settings.json   (avisos ntfy)
@@ -791,6 +792,56 @@ def close_project(p, say=print, grace_ms=5000):
     return True
 
 
+def focus_herdr_window():
+    """Trae al frente la ventana de Windows Terminal que aloja un cliente de Herdr. True si pudo."""
+    import ctypes
+    from ctypes import wintypes
+    _, clients = herdr_processes()
+    hosts = {c["ppid"] for c in clients}
+    if not hosts:
+        return False
+    u32 = ctypes.windll.user32
+    for fn in (u32.IsWindowVisible, u32.IsIconic, u32.SetForegroundWindow, u32.GetWindowTextLengthW):
+        fn.argtypes = [wintypes.HWND]  # sin esto un HWND de 64 bits se trunca a int
+    u32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    found = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _):
+        pid = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in hosts and u32.IsWindowVisible(hwnd) and u32.GetWindowTextLengthW(hwnd) > 0:
+            found.append(hwnd)
+        return True
+
+    u32.EnumWindows(proc(cb), 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    if u32.IsIconic(hwnd):
+        u32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    # Un proceso que no está al frente no puede dar el foco; una pulsación de Alt simulada le da el permiso.
+    u32.keybd_event(0x12, 0, 0, 0)
+    u32.keybd_event(0x12, 0, 2, 0)  # KEYEVENTF_KEYUP
+    u32.SetForegroundWindow(hwnd)
+    return True  # con la ventana ubicada, como mucho parpadea en la barra de tareas; abrir otra pestaña sería peor
+
+
+def cmd_app(say=print):
+    """Herdr como aplicación (acceso directo del escritorio): servidor arriba, y la ventana al frente o una pestaña nueva."""
+    if ensure_server(say):
+        restore_projects(load_projects(), say)
+    if inside_herdr():
+        say("ya estás dentro de Herdr.")
+        return 0
+    if focus_herdr_window():
+        say("ventana de Herdr al frente.")
+        return 0
+    attach(say, force=True)
+    return 0
+
+
 def attach(say=print, force=False):
     """Pestaña de Windows Terminal con un cliente de Herdr. Si ya hay una, no abre otra (salvo `agentnav attach`)."""
     if not force:
@@ -1334,6 +1385,8 @@ def main(argv):
     if cmd == "attach":
         attach(force=True)
         return 0
+    if cmd == "app":
+        return cmd_app()
     print(__doc__)
     return 0 if cmd in ("help", "-h", "--help") else 2
 

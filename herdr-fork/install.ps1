@@ -15,7 +15,8 @@ Para volver al oficial: `herdr update`.
 [CmdletBinding()]
 param(
     [string]$Repo = "pablitotester/herdr",
-    [string]$Tag = ""
+    [string]$Tag = "",
+    [string]$InstallDir = ""   # sólo para probar en una carpeta aparte; vacío = la instalación normal (%USERPROFILE%\.herdr)
 )
 
 Set-StrictMode -Version Latest
@@ -58,11 +59,14 @@ try {
     $installer = Join-Path $tmp "install.ps1"
     Get-File "https://raw.githubusercontent.com/$Repo/agentnav/distribution/install.ps1" $installer
     Step "Instalador oficial de Herdr con el manifiesto del fork"
-    & $installer -Channel stable -ManifestUrl $assets["agentnav-latest.json"]
+    $extra = @{}
+    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) { $extra["InstallDir"] = $InstallDir }
+    & $installer -Channel stable -ManifestUrl $assets["agentnav-latest.json"] @extra
     if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "el instalador oficial salió con $LASTEXITCODE" }
 
     # 3. ¿Quedó nuestro exe? Si la versión ya existía con el oficial, el instalador no tocó nada: lo cambiamos nosotros.
-    $current = Join-Path $env:USERPROFILE ".herdr\packages\standalone\current"
+    $root = if ([string]::IsNullOrWhiteSpace($InstallDir)) { Join-Path $env:USERPROFILE ".herdr" } else { $InstallDir }
+    $current = Join-Path $root "packages\standalone\current"
     $exe = Join-Path $current "herdr.exe"
     if (-not (Test-Path -LiteralPath $exe)) { throw "no encuentro $exe después de instalar" }
     $shaFile = Join-Path $tmp "herdr.exe.sha256"
@@ -86,7 +90,13 @@ try {
         Set-Content -LiteralPath (Join-Path $current "agentnav-build.json")
     $v = (& $exe --version | Out-String).Trim()
     Step "Listo: $v con temas AgentNav en $current"
-    Write-Host "    Abrí una PowerShell nueva y corré: herdr   (en Settings, ctrl+b s → theme, están cs16, matrix y procomm)"
+    $agentnav = Get-Command agentnav -ErrorAction SilentlyContinue
+    if ($null -ne $agentnav -and [string]::IsNullOrWhiteSpace($InstallDir)) {
+        Step "AgentNav está en esta PC: levanto Herdr de nuevo (agentnav app)"
+        & agentnav app
+    } else {
+        Write-Host "    Abrí una PowerShell nueva y corré: herdr   (en Settings, ctrl+b s → theme, están cs16, matrix y procomm)"
+    }
     Write-Host "    Volver al oficial: herdr update"
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

@@ -43,6 +43,14 @@ command = "py -I C:\\AgentNav\\agentnav.py pick"
 width = "70%"
 height = "60%"
 
+# 30/10: selector de temas (las paletas de config\\themes.json y los temas de Herdr). Enter aplica y recarga al instante.
+[[keys.command]]
+key = "prefix+alt+t"
+type = "popup"
+command = "py -I C:/AgentNav/agentnav.py theme pick"
+width = "60%"
+height = "60%"
+
 [ui]
 # Lista de agentes como cola de atención: bloqueados primero
 agent_panel_sort = "priority"

@@ -17,8 +17,9 @@ Uso:
   agentnav hoy [ayer|AAAA-MM-DD]
                            diario del día: qué le pediste a cada proyecto y cuánto trabajó
   agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque)
-  agentnav theme [nombre]  tema de colores de Herdr: sin nombre lista los disponibles (los de Herdr y las paletas de
-                           config\\themes.json: cs16, matrix, procomm); con nombre lo aplica y recarga la config
+  agentnav theme [nombre]  tema de colores de Herdr. Sin nombre: selector con flechas (es lo que corre el popup
+                           ctrl+b alt+t; `theme list` sólo imprime). Con nombre lo aplica y recarga al instante.
+                           Paletas propias en config\\themes.json: cs16, matrix, procomm; más los temas de Herdr
   agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
@@ -1636,24 +1637,75 @@ def apply_theme(name, say=print):
     return 0
 
 
-def cmd_theme(name=""):
-    if name:
-        return apply_theme(name)
+def theme_entries():
+    """Lo que se puede elegir: las paletas de AgentNav y después los temas propios de Herdr."""
     themes = load_themes()
+    out = [(n, t["title"]) for n, t in themes.items()]
+    out += [(n, "tema de Herdr") for n in HERDR_THEMES]
+    return out, themes
+
+
+def theme_now(themes):
     try:
         with open(HERDR_CFG, encoding="utf-8") as f:
             base, custom = current_theme(f.read())
     except OSError:
-        base, custom = "?", {}
-    cur = next((n for n, t in themes.items() if t["base"] == base and t["custom"] == custom), base if not custom else f"{base} + custom")
-    print(f"tema actual: {cur}")
-    print("paletas de AgentNav (config\\themes.json):")
-    for n, t in themes.items():
-        print(f"  {n:<12} {t['title']}")
-    print("temas de Herdr:")
-    print("  " + ", ".join(HERDR_THEMES))
-    print("aplicar: agentnav theme <nombre>")
-    return 0
+        return "?"
+    return next((n for n, t in themes.items() if t["base"] == base and t["custom"] == custom),
+                base if not custom else f"{base} + custom")
+
+
+def cmd_theme(name="", interactive=None):
+    """Sin nombre: lista (o, en una consola, el selector con flechas y Enter: es lo que corre el popup ctrl+b alt+t).
+    Con nombre: lo aplica."""
+    if name:
+        return apply_theme(name)
+    entries, themes = theme_entries()
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        print(f"tema actual: {theme_now(themes)}")
+        print("paletas de AgentNav (config\\themes.json):")
+        for n, title in entries:
+            if n in themes:
+                print(f"  {n:<12} {title}")
+        print("temas de Herdr:")
+        print("  " + ", ".join(HERDR_THEMES))
+        print("aplicar: agentnav theme <nombre>")
+        return 0
+    cur = theme_now(themes)
+    sel = next((i for i, (n, _) in enumerate(entries) if n == cur), 0)
+    msg = ""
+    while True:
+        sys.stdout.write("\x1b[2J\x1b[H")
+        print(paint(" AgentNav · temas de Herdr ", "7"))
+        print()
+        for i, (n, title) in enumerate(entries):
+            if i == len(themes):
+                print()
+            cursor = "▶" if i == sel else " "
+            mark = "●" if n == cur else " "
+            line = f" {cursor} {mark} {n:<16} {title}"
+            print(paint(line, "7") if i == sel else line)
+        print()
+        print(paint("  ↑↓ mover · Enter aplicar (se ve al instante) · q salir", "2"))
+        if msg:
+            print("  " + msg)
+        k = _getkey()
+        if k in ("q", "esc"):
+            return 0
+        if k in ("up", "k"):
+            sel = max(0, sel - 1)
+        elif k in ("down", "j"):
+            sel = min(len(entries) - 1, sel + 1)
+        elif k == "enter":
+            out = []
+            try:
+                apply_theme(entries[sel][0], say=out.append)
+                cur = entries[sel][0]
+            except AgentNavError as e:
+                out.append(str(e))
+            msg = " ".join(out)
 
 
 def cmd_ntfy_test():
@@ -1702,6 +1754,7 @@ def cmd_doctor():
         check("agentnav.py tab\"" in cfg and 'new_tab = ""' in cfg,
               "config.toml: ctrl+b c abre la pestaña de AgentNav (misma carpeta, mismo agente)")
         check("agentnav.py tab shell" in cfg, "config.toml: ctrl+b shift+c abre la pestaña pelada por la API")
+        check("agentnav.py theme" in cfg, "config.toml: popup de temas (prefix+alt+t)")
         check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
         try:
             import tomllib
@@ -2025,7 +2078,8 @@ def main(argv):
     if cmd == "doctor":
         return cmd_doctor()
     if cmd in ("theme", "tema"):
-        return cmd_theme(rest.strip())
+        arg = rest.strip()
+        return cmd_theme("" if arg in ("pick", "list") else arg, interactive=(True if arg == "pick" else False if arg == "list" else None))
     if cmd in ("ntfy-test", "ntfy"):
         return cmd_ntfy_test()
     if cmd == "up":
@@ -2057,6 +2111,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         code = 130
     finally:
-        if (sys.argv[1:2] or [""])[0].lower() != "pick":
+        if [a.lower() for a in sys.argv[1:3]] not in (["pick"], ["theme"], ["theme", "pick"], ["tema"], ["tema", "pick"]):
             _restore()  # el popup muere con su consola; a una pwsh ajena le devolvemos su code page
     sys.exit(code)

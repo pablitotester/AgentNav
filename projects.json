@@ -25,5 +25,14 @@
     ],
     "kind": "claude",
     "continue": true
+  },
+  {
+    "name": "AgentNav",
+    "path": "C:\\AgentNav",
+    "agents": [
+      "agentnav"
+    ],
+    "kind": "claude",
+    "continue": true
   }
 ]

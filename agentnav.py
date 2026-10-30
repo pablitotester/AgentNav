@@ -1100,9 +1100,7 @@ def cmd_tab(mode="", say=print, start_timeout_ms=90000):
         say(f"{ws.get('label') or wid}: pestaña de shell en {path}")
         api("tab", "create", "--workspace", wid, "--cwd", path, "--label", "shell", "--focus")
         return 0
-    path = pane.get("cwd") or ""
-    if not os.path.isdir(path):
-        path = project["path"] if project and os.path.isdir(project["path"]) else new_project_base()
+    path = _tab_path(pane.get("cwd") or "", project)
     a = _tab_agent(snap, wid, pane, project)
     taken = {x.get("name") for x in snap["agents"] if x.get("name")}
     label = agent_name(a["name"], taken) if a else os.path.basename(path.rstrip("\\/")) or "shell"
@@ -1112,6 +1110,18 @@ def cmd_tab(mode="", say=print, start_timeout_ms=90000):
         return 0
     a = dict(a, name=label)
     return 0 if _start_herdr_agent(a, path, t["root_pane"]["pane_id"], start_timeout_ms, say, set(), True) else 1
+
+
+def _tab_path(cwd, project):
+    """Carpeta de la pestaña nueva. En un espacio de proyecto manda la carpeta del proyecto: la del panel de origen
+    sólo si está adentro (una subcarpeta donde venías trabajando). Si el panel enfocado era un shell suelto en C:\\,
+    no hay que heredarle eso. Sin proyecto, la del panel; sin nada, donde nacen los proyectos."""
+    if project and os.path.isdir(project["path"]):
+        root = _norm_path(project["path"])
+        if cwd and os.path.isdir(cwd) and (_norm_path(cwd) + os.sep).startswith(root + os.sep):
+            return cwd
+        return project["path"]
+    return cwd if cwd and os.path.isdir(cwd) else new_project_base()
 
 
 def cmd_adopt(argv, say=print, start_timeout_ms=90000):

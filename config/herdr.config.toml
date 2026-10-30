@@ -11,6 +11,8 @@ auto_switch = false
 [terminal]
 # Paneles con PowerShell 7 en vez de Windows PowerShell 5.1
 default_shell = "pwsh"
+# 30/10: un espacio/pestaña/panel nuevo arranca en C:\ (donde viven los proyectos), no en la carpeta del panel actual ("follow").
+new_cwd = "C:\\"
 
 [keys]
 # 28/10: con teclado en español, "?" después del prefijo no se reconoce (las letras sí).

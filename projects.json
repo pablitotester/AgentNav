@@ -1,21 +1,5 @@
 [
   {
-    "name": "HerdrTest",
-    "path": "C:\\HerdrTest",
-    "agents": [
-      "prueba",
-      {
-        "name": "logs",
-        "kind": "shell",
-        "command": "Get-Date",
-        "split": "right",
-        "ratio": 0.35
-      }
-    ],
-    "kind": "claude",
-    "continue": true
-  },
-  {
     "name": "MiniZelda",
     "path": "C:\\MiniZelda",
     "agents": [

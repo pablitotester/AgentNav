@@ -116,7 +116,19 @@ instalada, antes corre `herdr update` para que el instalador oficial traiga su c
 después pisa el exe. `doctor` dice si el exe instalado es el del fork, si `herdr update` lo pisó y si el fork tiene un
 build más nuevo. Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
 
-Copias de referencia del parche y del workflow: `herdr-fork\` en este repo.
+**Otra PC desde cero (la de casa):** el release del fork trae también el zip completo con conpty y un manifiesto
+`agentnav-latest.json` con la misma forma que `herdr.dev/latest.json`, así que el instalador oficial de Herdr lo instala
+como si fuera una versión normal. Una línea en PowerShell:
+
+```
+irm https://raw.githubusercontent.com/pablitotester/herdr/agentnav/agentnav/install.ps1 | iex
+```
+
+Corre el instalador oficial de esa misma versión apuntado al manifiesto del fork (carpeta, junction `current`, PATH,
+conpty), y si esa versión ya estaba con el exe oficial, cierra Herdr, pone el del fork verificando el SHA-256 y deja el
+marcador. No instala AgentNav: eso es clonar este repo aparte.
+
+Copias de referencia del parche, el workflow y el instalador: `herdr-fork\` en este repo.
 
 ## Límites conocidos del estado
 

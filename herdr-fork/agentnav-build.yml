@@ -3,7 +3,9 @@
 # Una vez por día (o a mano) mira el último tag v* de herdrdev/herdr. Si es más nuevo que agentnav/BASE_TAG,
 # rebasa la rama `agentnav` (un solo commit: paletas + este workflow) sobre ese tag y la vuelve a subir.
 # Después compila herdr.exe para Windows x86_64 igual que el release oficial (mismo toolchain, Zig y flags)
-# y publica un release `agentnav-<tag>` con el exe y su SHA-256. En la PC, `agentnav herdr-sync` lo baja.
+# y publica un release `agentnav-<tag>` con: el exe suelto y su SHA-256 (para `agentnav herdr-sync`), el zip completo
+# con conpty igual al oficial, y un manifiesto `agentnav-latest.json` con la misma forma que herdr.dev/latest.json, para
+# que el instalador oficial de Herdr instale este build desde cero (`agentnav/install.ps1` lo encadena).
 # Si el rebase choca, no toca nada: abre un issue en este fork y falla.
 
 name: AgentNav build
@@ -129,6 +131,19 @@ jobs:
       - name: Tests de temas (resolución, contraste, sidebar)
         run: cargo test --release --locked --target x86_64-pc-windows-msvc --bin herdr -- built_in_theme built_in_active built_in_selection built_in_themes
 
+      - name: Empaquetar zip con conpty (mismo script que el release oficial)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          New-Item -ItemType Directory -Force out | Out-Null
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\x86_64-pc-windows-msvc\release\herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath out\herdr-windows-x86_64.zip
+
       - name: Verificar identidad del binario
         shell: pwsh
         run: |
@@ -144,6 +159,21 @@ jobs:
           $sha = (Get-FileHash out\herdr.exe -Algorithm SHA256).Hash.ToLower()
           "$sha *herdr.exe" | Set-Content -NoNewline out\herdr.exe.sha256
           @{ tag = "${{ needs.sync.outputs.tag }}"; sha256 = $sha; built = (Get-Date).ToUniversalTime().ToString("o"); source = "${{ github.server_url }}/${{ github.repository }}/tree/agentnav" } | ConvertTo-Json | Set-Content out\agentnav-build.json
+          # Manifiesto con la forma de herdr.dev/latest.json: el instalador oficial lo acepta con -ManifestUrl.
+          $zipSha = (Get-FileHash out\herdr-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
+          $protocol = 0
+          $m = Select-String -Path src\protocol\wire.rs -Pattern 'PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)' | Select-Object -First 1
+          if ($m) { $protocol = [int]$m.Matches[0].Groups[1].Value }
+          $base = "${{ github.server_url }}/${{ github.repository }}/releases/download/agentnav-${{ needs.sync.outputs.tag }}"
+          [ordered]@{
+            version = $tagVersion
+            protocol = $protocol
+            notes = "Herdr $tagVersion + temas AgentNav (cs16, matrix, procomm). Build de ${{ github.repository }}, rama agentnav."
+            assets = [ordered]@{ "windows-x86_64" = "$base/herdr-windows-x86_64.zip" }
+            sha256 = [ordered]@{ "windows-x86_64" = $zipSha }
+            agentnav = [ordered]@{ tag = "${{ needs.sync.outputs.tag }}"; exe_sha256 = $sha }
+          } | ConvertTo-Json -Depth 4 | Set-Content out\agentnav-latest.json
+          Get-Content out\agentnav-latest.json
 
       - name: Publicar release agentnav-<tag>
         shell: bash
@@ -152,10 +182,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="agentnav-${{ needs.sync.outputs.tag }}"
-          notes="Herdr ${{ needs.sync.outputs.tag }} compilado desde la rama agentnav: upstream + tres temas extra (cs16, matrix, procomm). Sólo el herdr.exe: los archivos de conpty son los del instalador oficial. Instalar con: agentnav herdr-sync"
+          notes="Herdr ${{ needs.sync.outputs.tag }} compilado desde la rama agentnav: upstream + tres temas extra (cs16, matrix, procomm). Instalación desde cero en Windows: \`irm https://raw.githubusercontent.com/${{ github.repository }}/agentnav/agentnav/install.ps1 | iex\` (instalador oficial + este build). Con AgentNav ya instalado: agentnav herdr-sync."
+          files="out/herdr.exe out/herdr.exe.sha256 out/agentnav-build.json out/herdr-windows-x86_64.zip out/agentnav-latest.json"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" out/herdr.exe out/herdr.exe.sha256 out/agentnav-build.json --clobber
+            gh release upload "$tag" $files --clobber
           else
-            gh release create "$tag" out/herdr.exe out/herdr.exe.sha256 out/agentnav-build.json \
+            gh release create "$tag" $files \
               --target agentnav --title "Herdr ${{ needs.sync.outputs.tag }} + temas AgentNav" --notes "$notes" --latest
           fi

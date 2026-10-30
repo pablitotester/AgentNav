@@ -61,7 +61,9 @@ Cada proyecto: nombre, ruta y qué abrir. Un agente puede ser un string (nombre 
 }
 ```
 
-- `continue`: arranca Claude con `--continue` si hay una conversación guardada para esa carpeta. Por proyecto o por agente.
+- `continue`: retoma la última conversación que tuvo pedidos **dentro de Herdr** en esa carpeta (`--resume <id>`, según el
+  diario). Si no hay ninguna, `--continue` sólo cuando ningún otro Claude corre en esa carpeta (otro agente del proyecto o
+  uno en otra terminal): `--continue` agarra la conversación más nueva y pisaría la que está abierta afuera. Por proyecto o por agente.
 - `args`: argumentos crudos para el agente (`["--model", "opus"]`), por proyecto o por agente.
 - `kind`: `claude` (default) o cualquier agente que Herdr conozca; `shell` es un panel común.
 - `command`: sólo para `shell`, se ejecuta al abrir.
@@ -89,6 +91,11 @@ servidor propio.
   pantalla antes, así que el panel se pone en rojo igual.
 - El hook de desbloqueo sólo lanza PowerShell si existe la marca de **esa** sesión (`CLAUDE_CODE_SESSION_ID`);
   cuesta ~60 ms por herramienta en el resto de los casos.
+- Tras reiniciar el servidor (`herdr server stop` + `agentnav up`), Herdr restaura los espacios con un panel vacío;
+  `agentnav`, `up` y `open` reponen los agentes de los proyectos registrados en ese mismo panel.
+- `agentnav open` desde fuera de Herdr no abre otra pestaña si ya hay un cliente de Herdr abierto; `agentnav attach` sí.
+- El servidor de Herdr retiene como directorio actual la carpeta desde la que se lo arrancó: levantalo con `agentnav up`
+  (o el `.vbs` de inicio), nunca desde la carpeta de un proyecto. `doctor` lo verifica.
 
 ## Requisitos
 

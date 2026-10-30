@@ -348,6 +348,156 @@ def recent_projects(projects, limit=8):
     return out[:limit]
 
 
+def last_herdr_session(path, exclude=()):
+    """Id de la última conversación que recibió pedidos DENTRO de un panel de Herdr en esa carpeta, según el diario,
+    siempre que Claude todavía la guarde. Herdr retoma lo de Herdr: lo que corre en otra terminal no se toca."""
+    want = _norm_path(path)
+    d = _claude_project_dirs().get(claude_project_key(path).lower())
+    if not d:
+        return None
+    try:
+        files = [n for n in os.listdir(d) if n.endswith(".jsonl")]
+        days = sorted((n[:-4] for n in os.listdir(JOURNAL_DIR) if n.endswith(".log")), reverse=True)[:60]
+    except OSError:
+        return None
+    for day in days:
+        for e in reversed(read_journal(day)):
+            if e["event"] not in ("prompt", "stop") or not e["cwd"] or _norm_path(e["cwd"]) != want:
+                continue
+            sid = next((n[:-6] for n in files if n.lower().startswith(e["sid"].lower())), None)
+            if sid and sid not in exclude:
+                return sid
+    return None
+
+
+# ---------------------------------------------------------------- procesos de Windows (quién corre dónde)
+
+_PROC_NAMES = frozenset(("claude.exe", "node.exe", "herdr.exe"))
+
+
+def _process_table(names):
+    """Todos los procesos (pid, ppid, nombre) y, para los de `names`, su cwd y línea de comando leídos del PEB con ctypes.
+    WMI tarda medio segundo; esto, unos milisegundos. Sólo Python de 64 bits."""
+    import ctypes
+    from ctypes import wintypes
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        return []
+    k32, ntdll = ctypes.windll.kernel32, ctypes.windll.ntdll
+
+    class PE32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    class PBI(ctypes.Structure):
+        _fields_ = [("Reserved1", ctypes.c_void_p), ("PebBaseAddress", ctypes.c_void_p), ("Reserved2", ctypes.c_void_p * 2),
+                    ("UniqueProcessId", ctypes.c_void_p), ("Reserved3", ctypes.c_void_p)]
+
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+    ntdll.NtQueryInformationProcess.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+
+    def read(h, addr, size):
+        buf, got = ctypes.create_string_buffer(size), ctypes.c_size_t()
+        if not k32.ReadProcessMemory(h, ctypes.c_void_p(addr), buf, size, ctypes.byref(got)) or got.value != size:
+            return None
+        return buf.raw
+
+    def ustr(h, addr):  # UNICODE_STRING {Length, MaximumLength, Buffer} en la memoria del otro proceso
+        raw = read(h, addr, 16)
+        if not raw:
+            return ""
+        n, p = int.from_bytes(raw[0:2], "little"), int.from_bytes(raw[8:16], "little")
+        if not n or n > 65536 or not p:
+            return ""
+        raw = read(h, p, n)
+        return raw.decode("utf-16-le", "replace") if raw else ""
+
+    def details(pid):
+        h = k32.OpenProcess(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ
+        if not h:
+            return "", ""
+        try:
+            pbi, ret = PBI(), wintypes.ULONG()
+            if ntdll.NtQueryInformationProcess(h, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret)) != 0 or not pbi.PebBaseAddress:
+                return "", ""
+            raw = read(h, pbi.PebBaseAddress + 0x20, 8)  # PEB.ProcessParameters
+            if not raw:
+                return "", ""
+            params = int.from_bytes(raw, "little")
+            return ustr(h, params + 0x38), ustr(h, params + 0x70)  # CurrentDirectory.DosPath, CommandLine
+        finally:
+            k32.CloseHandle(h)
+
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == 2 ** 64 - 1:
+        return []
+    out = []
+    pe = PE32()
+    pe.dwSize = ctypes.sizeof(PE32)
+    try:
+        ok = k32.Process32FirstW(snap, ctypes.byref(pe))
+        while ok:
+            name = pe.szExeFile.lower()
+            cwd, cmd = details(pe.th32ProcessID) if name in names else ("", "")
+            out.append({"pid": pe.th32ProcessID, "ppid": pe.th32ParentProcessID, "name": name, "cwd": cwd, "cmd": cmd})
+            ok = k32.Process32NextW(snap, ctypes.byref(pe))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _procs():
+    try:
+        return _process_table(_PROC_NAMES)
+    except Exception:
+        return []
+
+
+def _under_herdr(proc, by_pid):
+    """El proceso desciende del servidor de Herdr (es un panel) o de un cliente."""
+    seen, p = set(), proc
+    while p and p["pid"] not in seen:
+        seen.add(p["pid"])
+        p = by_pid.get(p["ppid"])
+        if p and p["name"] == "herdr.exe":
+            return True
+    return False
+
+
+def claudes_outside_herdr(path):
+    """Cuántos Claude Code corren en esa carpeta fuera de Herdr (una pestaña de Windows Terminal, por ejemplo)."""
+    procs = _procs()
+    by_pid = {p["pid"]: p for p in procs}
+    want = _norm_path(path)
+    n = 0
+    for p in procs:
+        is_claude = p["name"] == "claude.exe" or (p["name"] == "node.exe" and "claude" in p["cmd"].lower()
+                                                   and (by_pid.get(p["ppid"]) or {}).get("name") != "claude.exe")
+        if is_claude and p["cwd"] and _norm_path(p["cwd"]) == want and not _under_herdr(p, by_pid):
+            n += 1
+    return n
+
+
+def herdr_processes():
+    """(servidor, [clientes]) entre los herdr.exe vivos."""
+    server, clients = None, []
+    for p in _procs():
+        if p["name"] != "herdr.exe":
+            continue
+        if re.search(r'herdr(\.exe)?"?\s+server\b', p["cmd"], re.I):
+            server = p
+        else:
+            clients.append(p)
+    return server, clients
+
+
 # ---------------------------------------------------------------- git
 
 def git_info(path, timeout=4):
@@ -415,12 +565,30 @@ def git_text(info):
 
 # ---------------------------------------------------------------- acciones
 
-def _start_herdr_agent(a, path, pane, timeout_ms, say):
+def _continue_args(a, path, say, used, others_live):
+    """Qué conversación retoma un Claude con `continue`: la última que tuvo pedidos dentro de Herdr en esa carpeta
+    (--resume), que no esté viva en otro panel. Sin una, --continue sólo si ningún otro Claude corre en la carpeta:
+    --continue agarra la conversación MÁS NUEVA, que puede ser la que está abierta en otra terminal."""
+    sid = last_herdr_session(path, exclude=used)
+    if sid:
+        used.add(sid)
+        return ["--resume", sid]
+    if not has_conversation(path):
+        return []
+    if others_live:
+        say(f"  {a['name']}: otro Claude del proyecto ya está en esa carpeta; arranca una conversación nueva.")
+    elif claudes_outside_herdr(path):
+        say(f"  {a['name']}: hay un Claude corriendo en esa carpeta fuera de Herdr; arranca una conversación nueva para no pisarla.")
+    else:
+        return ["--continue"]
+    return []
+
+
+def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=False):
     """Arranca un agente que Herdr conoce (claude, codex…). Devuelve True si quedó listo."""
     args = list(a["args"])
     if a["continue"] and a["kind"] == "claude" and "--continue" not in args and "--resume" not in args:
-        if has_conversation(path):
-            args.append("--continue")
+        args += _continue_args(a, path, say, used if used is not None else set(), others_live)
     extra = f" {' '.join(args)}" if args else ""
     say(f"  {a['name']}: arrancando {a['kind']}{extra} en {pane}…")
     try:
@@ -490,9 +658,26 @@ def _new_pane(a, wid, path, prev_pane, label):
     return t["root_pane"]["pane_id"]
 
 
-def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms, say):
+def _idle_shell_pane(snap, wid):
+    """El panel que Herdr deja al restaurar un espacio tras reiniciar el servidor: el único del espacio, sin agente
+    y con sólo el shell en primer plano. Se reutiliza en vez de dejarlo vacío al lado del agente repuesto."""
+    panes = [x for x in snap.get("panes", []) if x.get("workspace_id") == wid and not x.get("agent")]
+    if len(panes) != 1:
+        return None, None
+    try:
+        info = api("pane", "process-info", "--pane", panes[0]["pane_id"]).get("process_info") or {}
+    except AgentNavError:
+        return None, None
+    fg = info.get("foreground_processes") or []
+    if len(fg) == 1 and os.path.basename(fg[0].get("name") or "").lower() in ("pwsh.exe", "powershell.exe", "cmd.exe"):
+        return panes[0]["pane_id"], panes[0].get("tab_id")
+    return None, None
+
+
+def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms, say, live_sids=(), others_live=False):
     """Crea paneles y arranca los agentes de la lista. Devuelve True si todos quedaron bien."""
     all_ok, prev_pane = True, None
+    used = set(live_sids)  # conversaciones que ya corren en algún panel: ningún agente nuevo las retoma
     for i, a in enumerate(agents):
         a = dict(a)
         if a["kind"] != SHELL_KIND:
@@ -512,7 +697,8 @@ def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms
                     wait_prompt(pane, 10000)  # pwsh en frío tarda hasta ~3 s en llegar al prompt
                 all_ok &= _start_shell(a, pane, say)
             else:
-                all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say)
+                all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say, used, others_live)
+                others_live = True  # el siguiente Claude del mismo proyecto no debe hacer --continue sobre éste
             prev_pane = pane
         except AgentNavError as e:
             say(f"  {a['name']}: {e}")
@@ -523,9 +709,11 @@ def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms
 def open_project(p, say=print, start_timeout_ms=90000):
     """Abre el proyecto como espacio de Herdr, o lo enfoca y repone los agentes que falten.
     Devuelve (modo, todos_listos) con modo 'created' o 'focused'."""
-    ensure_server(say)
+    if ensure_server(say):
+        restore_projects([q for q in load_projects() if q["name"] != p["name"]], say)
     snap = snapshot()
     taken = {a.get("name") for a in snap["agents"] if a.get("name")}
+    live_sids = {(a.get("agent_session") or {}).get("value") for a in snap["agents"]} - {None, ""}
     wanted = p["agents"]
 
     ws = find_ws(snap, p["name"])
@@ -540,15 +728,37 @@ def open_project(p, say=print, start_timeout_ms=90000):
             return "focused", True
         say(f"{p['name']}: abierto; faltan {', '.join(a['name'] for a in missing)}.")
         missing = [dict(a, split=None) for a in missing]  # cada repuesto en su pestaña
-        return "focused", _place_agents(p, wid, missing, taken, None, None, start_timeout_ms, say)
+        spare_pane, spare_tab = (None, None) if live else _idle_shell_pane(snap, wid)  # el panel vacío de una restauración
+        others = any(a.get("agent") == "claude" for a in live)
+        return "focused", _place_agents(p, wid, missing, taken, spare_pane, spare_tab, start_timeout_ms, say, live_sids, others)
 
     if not os.path.isdir(p["path"]):
         raise AgentNavError(f"{p['name']}: la carpeta no existe: {p['path']}")
     say(f"{p['name']}: abriendo espacio en {p['path']}…")
     r = api("workspace", "create", "--cwd", p["path"], "--label", p["name"])
     wid = r["workspace"]["workspace_id"]
-    ok = _place_agents(p, wid, wanted, taken, r["root_pane"]["pane_id"], r["tab"]["tab_id"], start_timeout_ms, say)
+    ok = _place_agents(p, wid, wanted, taken, r["root_pane"]["pane_id"], r["tab"]["tab_id"], start_timeout_ms, say, live_sids)
     return "created", ok
+
+
+def restore_projects(projects, say=print, wait=3.0):
+    """Recién levantado el servidor, Herdr restaura cada espacio con un panel de shell vacío y sin agentes:
+    a los que son proyectos registrados les repone los agentes en ese mismo panel."""
+    deadline = time.time() + wait
+    while True:
+        snap = snapshot()
+        found = [p for p in projects if find_ws(snap, p["name"])]
+        if found or time.time() >= deadline:
+            break
+        time.sleep(0.3)
+    if found:
+        say(f"espacios restaurados por Herdr: {', '.join(p['name'] for p in found)}; repongo los agentes.")
+    for p in found:
+        try:
+            open_project(p, say)
+        except AgentNavError as e:
+            say(f"{p['name']}: {e}")
+    return found
 
 
 def close_project(p, say=print, grace_ms=5000):
@@ -581,7 +791,13 @@ def close_project(p, say=print, grace_ms=5000):
     return True
 
 
-def attach(say=print):
+def attach(say=print, force=False):
+    """Pestaña de Windows Terminal con un cliente de Herdr. Si ya hay una, no abre otra (salvo `agentnav attach`)."""
+    if not force:
+        _, clients = herdr_processes()
+        if clients:
+            say("Herdr ya tiene una pestaña abierta en Windows Terminal; pasá a ella (agentnav attach abre otra).")
+            return False
     wt = shutil.which("wt.exe") or shutil.which("wt")
     if not wt:
         raise AgentNavError("no encuentro wt.exe (Windows Terminal)")
@@ -591,6 +807,7 @@ def attach(say=print):
     except OSError as e:
         raise AgentNavError(f"no pude abrir Windows Terminal: {e}")
     say("pestaña de Windows Terminal abierta con Herdr.")
+    return True
 
 
 STATUS_GLYPH = {"blocked": "✖", "working": "◐", "done": "✔", "idle": "○", "unknown": "?"}
@@ -878,7 +1095,19 @@ def cmd_doctor():
     try:
         projects = load_projects()
         check(True, f"projects.json: {len(projects)} proyecto(s)")
+        server, _ = herdr_processes()
+        if server and server["cwd"]:
+            scwd = _norm_path(server["cwd"])
+            hit = next((p for p in projects if _norm_path(p["path"]) == scwd), None)
+            if hit:
+                check(False, f"el servidor de Herdr corre desde la carpeta de {hit['name']} y la retiene: herdr server stop, después agentnav up")
+            elif USERPROFILE and scwd != _norm_path(USERPROFILE):
+                check(None, f"el servidor de Herdr corre desde {server['cwd']} (retiene esa carpeta hasta que se reinicie)")
+            else:
+                check(True, "servidor de Herdr arrancado desde tu carpeta de usuario")
         for p in projects:
+            if any(a["kind"] == "claude" and a.get("continue") for a in p["agents"]) and claudes_outside_herdr(p["path"]):
+                check(None, f"  {p['name']}: hay un Claude corriendo en esa carpeta fuera de Herdr; 'continue' no lo va a pisar, arranca uno nuevo")
             if not os.path.isdir(p["path"]):
                 check(False, f"  {p['name']}: la carpeta no existe: {p['path']}")
             if p["agents"] and p["agents"][0]["split"]:
@@ -1068,7 +1297,8 @@ def main(argv):
     cmd = (argv[0] if argv else "").lower()
     rest = " ".join(argv[1:])
     if cmd in ("", "go"):
-        ensure_server()
+        if ensure_server():
+            restore_projects(load_projects())
         if inside_herdr():
             print("ya estás dentro de Herdr.")
         else:
@@ -1095,10 +1325,14 @@ def main(argv):
     if cmd in ("ntfy-test", "ntfy"):
         return cmd_ntfy_test()
     if cmd == "up":
-        print("servidor arriba." if ensure_server() else "servidor ya corría.")
+        if ensure_server():
+            print("servidor arriba.")
+            restore_projects(load_projects())
+        else:
+            print("servidor ya corría.")
         return 0
     if cmd == "attach":
-        attach()
+        attach(force=True)
         return 0
     print(__doc__)
     return 0 if cmd in ("help", "-h", "--help") else 2

@@ -4,12 +4,19 @@
 Uso:
   agentnav                 levanta el servidor de Herdr si hace falta y abre una pestaña de Windows Terminal enganchada
   agentnav list            proyectos registrados, cuáles están abiertos y el estado de cada agente
-  agentnav open <nombre>   abre el proyecto como espacio de Herdr con sus Claude adentro (o lo enfoca si ya está)
+  agentnav open <nombre>   abre el proyecto como espacio de Herdr con sus agentes adentro (o lo enfoca si ya está)
+  agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
+  agentnav recent          carpetas donde usaste Claude Code y no están registradas
+  agentnav hoy [ayer|AAAA-MM-DD]
+                           diario del día: qué le pediste a cada proyecto y cuánto trabajó
+  agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque)
+  agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
 
-Registro: C:\\AgentNav\\projects.json  (nombre, ruta, agentes a abrir)
+Registro: C:\\AgentNav\\projects.json   (nombre, ruta, agentes a abrir)
+Ajustes:  C:\\AgentNav\\settings.json   (avisos ntfy)
 Sólo stdlib. Windows.
 """
 import functools
@@ -19,14 +26,23 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 HOME = os.path.dirname(os.path.abspath(__file__))
 PROJECTS_PATH = os.path.join(HOME, "projects.json")
-STANDALONE = os.path.join(os.environ.get("USERPROFILE", ""), ".herdr", "packages", "standalone", "current", "herdr.exe")
+SETTINGS_PATH = os.path.join(HOME, "settings.json")
+USERPROFILE = os.environ.get("USERPROFILE", "")
+STANDALONE = os.path.join(USERPROFILE, ".herdr", "packages", "standalone", "current", "herdr.exe")
+CLAUDE_HOME = os.path.join(USERPROFILE, ".claude")
+CLAUDE_PROJECTS = os.path.join(CLAUDE_HOME, "projects")
+STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentNav")
+JOURNAL_DIR = os.path.join(STATE_DIR, "journal")
 
 CREATE_NO_WINDOW = 0x08000000
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+SHELL_KIND = "shell"
 
 
 class AgentNavError(Exception):
@@ -100,12 +116,11 @@ def ensure_server(say=print):
         return False
     say("levantando el servidor de Herdr…")
     try:
-        subprocess.Popen([herdr_bin(), "server"], cwd=os.environ.get("USERPROFILE", HOME),
+        subprocess.Popen([herdr_bin(), "server"], cwd=USERPROFILE or HOME,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
     except OSError as e:
         raise AgentNavError(f"no pude lanzar el servidor: {e}")
-    import time
     for _ in range(40):
         time.sleep(0.25)
         if server_running():
@@ -122,17 +137,59 @@ def snapshot():
 
 # ---------------------------------------------------------------- registro
 
-def _read_projects_raw():
-    if not os.path.isfile(PROJECTS_PATH):
-        return []
+def _read_json_file(path, what):
+    if not os.path.isfile(path):
+        return None
     try:
-        with open(PROJECTS_PATH, encoding="utf-8") as f:
-            data = json.load(f)
+        with open(path, encoding="utf-8-sig") as f:
+            return json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        raise AgentNavError(f"projects.json inválido: {e}")
+        raise AgentNavError(f"{what} inválido: {e}")
+
+
+def _read_projects_raw():
+    data = _read_json_file(PROJECTS_PATH, "projects.json")
+    if data is None:
+        return []
     if not isinstance(data, list):
         raise AgentNavError("projects.json tiene que ser una lista de proyectos")
     return data
+
+
+def load_settings():
+    data = _read_json_file(SETTINGS_PATH, "settings.json")
+    return data if isinstance(data, dict) else {}
+
+
+def _as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v]
+    return [str(x) for x in v if x is not None and str(x) != ""]
+
+
+def _norm_agent(raw, p_kind, p_args, p_continue, fallback_name):
+    """Un agente del registro: string ("qa") u objeto ({name, kind, args, continue, command, split, ratio})."""
+    if isinstance(raw, str):
+        raw = {"name": raw}
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or fallback_name)
+    kind = str(raw.get("kind") or p_kind)
+    a = {"name": name, "kind": kind,
+         "args": _as_list(raw.get("args")) or list(p_args),
+         "continue": bool(raw.get("continue", p_continue)) if kind != SHELL_KIND else False,
+         "command": str(raw.get("command") or "") if kind == SHELL_KIND else "",
+         "split": str(raw.get("split") or "") or None,
+         "ratio": raw.get("ratio")}
+    if a["split"] not in (None, "right", "down"):
+        a["split"] = None
+    try:
+        a["ratio"] = float(a["ratio"]) if a["ratio"] is not None else None
+    except (TypeError, ValueError):
+        a["ratio"] = None
+    return a
 
 
 def load_projects():
@@ -140,22 +197,31 @@ def load_projects():
     for p in _read_projects_raw():
         if not isinstance(p, dict) or not p.get("name") or not p.get("path"):
             continue
-        agents = p.get("agents") or []
-        out.append({"name": str(p["name"]), "path": str(p["path"]),
-                    "agents": [str(a) for a in agents if a],
-                    "kind": str(p.get("kind") or "claude")})
+        p_kind = str(p.get("kind") or "claude")
+        p_args = _as_list(p.get("args"))
+        p_cont = bool(p.get("continue", False))
+        raw_agents = p.get("agents") or [str(p["name"])]
+        agents = [a for a in (_norm_agent(r, p_kind, p_args, p_cont, str(p["name"])) for r in raw_agents) if a]
+        out.append({"name": str(p["name"]), "path": str(p["path"]), "agents": agents,
+                    "kind": p_kind, "continue": p_cont})
     return out
 
 
-def add_project(name, path):
-    """Agrega al archivo sin tocar lo que ya había (conserva claves ajenas), escritura atómica."""
-    raw = _read_projects_raw()
-    raw.append({"name": name, "path": path, "agents": [agent_name(name, set())], "kind": "claude"})
+def _write_projects_raw(raw):
     tmp = PROJECTS_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
         f.write("\n")
     os.replace(tmp, PROJECTS_PATH)
+
+
+def add_project(name, path):
+    """Agrega al archivo sin tocar lo que ya había (conserva claves ajenas), escritura atómica."""
+    raw = _read_projects_raw()
+    if any(isinstance(p, dict) and str(p.get("name", "")).lower() == name.lower() for p in raw):
+        raise AgentNavError(f"ya hay un proyecto llamado {name}")
+    raw.append({"name": name, "path": path, "agents": [agent_name(name, set())], "kind": "claude", "continue": True})
+    _write_projects_raw(raw)
 
 
 def find_project(projects, name):
@@ -188,22 +254,212 @@ def ws_label(ws):
     return (ws.get("label") or "").lower()
 
 
+def _norm_path(p):
+    return os.path.normcase(os.path.normpath(p))
+
+
+# ---------------------------------------------------------------- Claude Code: conversaciones previas, recientes
+
+def claude_project_dir(path):
+    """Carpeta de Claude Code para un cwd: todo lo que no es letra o dígito se vuelve '-'."""
+    return os.path.join(CLAUDE_PROJECTS, re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(path)))
+
+
+def has_conversation(path):
+    d = claude_project_dir(path)
+    try:
+        return any(n.endswith(".jsonl") for n in os.listdir(d))
+    except OSError:
+        return False
+
+
+def _cwd_from_dir(d):
+    """Lee el cwd real de la última conversación guardada en una carpeta de ~/.claude/projects."""
+    try:
+        files = [os.path.join(d, n) for n in os.listdir(d) if n.endswith(".jsonl")]
+    except OSError:
+        return None, 0
+    if not files:
+        return None, 0
+    newest = max(files, key=lambda f: os.path.getmtime(f))
+    cwd = None
+    try:
+        with open(newest, encoding="utf-8", errors="replace") as f:
+            for _ in range(60):
+                line = f.readline()
+                if not line:
+                    break
+                m = re.search(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', line)
+                if m:
+                    try:
+                        cwd = json.loads('"' + m.group(1) + '"')
+                    except json.JSONDecodeError:
+                        cwd = None
+                    if cwd:
+                        break
+    except OSError:
+        pass
+    if not cwd:
+        base = os.path.basename(d)
+        if re.match(r"^[A-Za-z]--", base):
+            cwd = base[0] + ":\\" + base[3:].replace("-", "\\")
+    return cwd, os.path.getmtime(newest)
+
+
+def recent_projects(projects, limit=8):
+    """Carpetas donde corrió Claude Code que no están en el registro, de la más reciente a la más vieja."""
+    known = {_norm_path(p["path"]) for p in projects}
+    seen, out = set(), []
+    try:
+        dirs = [os.path.join(CLAUDE_PROJECTS, n) for n in os.listdir(CLAUDE_PROJECTS)]
+    except OSError:
+        return []
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        cwd, when = _cwd_from_dir(d)
+        if not cwd or not os.path.isdir(cwd):
+            continue
+        k = _norm_path(cwd)
+        if k in known or k in seen or "\\appdata\\" in k or "\\temp\\" in k:
+            continue
+        if k == _norm_path(USERPROFILE):
+            continue
+        seen.add(k)
+        out.append({"path": os.path.normpath(cwd), "when": when})
+    out.sort(key=lambda r: -r["when"])
+    return out[:limit]
+
+
+# ---------------------------------------------------------------- git
+
+def git_info(path, timeout=4):
+    """(rama, cambios pendientes) o None si no es un repo o git no contesta a tiempo."""
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return None
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        b = subprocess.run([git, "-C", path, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        branch = b.stdout.strip() or "HEAD suelto"
+        s = subprocess.run([git, "-C", path, "status", "--porcelain", "-uno"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        dirty = len([l for l in s.stdout.splitlines() if l.strip()]) if s.returncode == 0 else None
+        return branch, dirty
+    except (subprocess.TimeoutExpired, OSError):
+        return ("…", None)
+
+
+def git_info_all(projects, wait=2.0):
+    """Lanza git por proyecto en hilos y devuelve un dict que se va llenando (los que tardan aparecen después)."""
+    import threading
+    out = {}
+
+    def one(p):
+        out[p["name"]] = git_info(p["path"])
+
+    threads = [threading.Thread(target=one, args=(p,), daemon=True) for p in projects]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + wait
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return out
+
+
+def git_text(info):
+    if info is None:
+        return ""
+    branch, dirty = info
+    if dirty is None:
+        return branch
+    return f"{branch} ±{dirty}" if dirty else f"{branch} ✓"
+
+
 # ---------------------------------------------------------------- acciones
 
-def _start_agent(p, name, pane, timeout_ms, say):
-    """Devuelve True si el agente quedó listo."""
-    say(f"  {name}: arrancando {p['kind']} en {pane}…")
+def _start_herdr_agent(a, path, pane, timeout_ms, say):
+    """Arranca un agente que Herdr conoce (claude, codex…). Devuelve True si quedó listo."""
+    args = list(a["args"])
+    if a["continue"] and a["kind"] == "claude" and "--continue" not in args and "--resume" not in args:
+        if has_conversation(path):
+            args.append("--continue")
+    extra = f" {' '.join(args)}" if args else ""
+    say(f"  {a['name']}: arrancando {a['kind']}{extra} en {pane}…")
     try:
-        api("agent", "start", name, "--kind", p["kind"], "--pane", pane, "--timeout", str(timeout_ms),
-            timeout=timeout_ms / 1000 + 10)
-        say(f"  {name}: listo.")
+        cli = ["agent", "start", a["name"], "--kind", a["kind"], "--pane", pane, "--timeout", str(timeout_ms)]
+        if args:
+            cli += ["--", *args]
+        api(*cli, timeout=timeout_ms / 1000 + 10)
+        say(f"  {a['name']}: listo.")
         return True
     except AgentNavError as e:
         if "agent_not_ready" in str(e):
-            say(f"  {name}: espera el diálogo de confianza de carpeta de Claude; respondelo en el panel.")
+            say(f"  {a['name']}: espera el diálogo de confianza de carpeta de Claude; respondelo en el panel.")
         else:
-            say(f"  {name}: no arrancó ({e})")
+            say(f"  {a['name']}: no arrancó ({e})")
         return False
+
+
+def _start_shell(a, pane, say):
+    """Panel de shell común: le pone nombre y, si hay comando, lo lanza."""
+    try:
+        api("pane", "rename", pane, a["name"])
+    except AgentNavError:
+        pass
+    if not a["command"]:
+        say(f"  {a['name']}: shell en {pane}.")
+        return True
+    say(f"  {a['name']}: {a['command']}  en {pane}")
+    # "pane run" no devuelve JSON cuando sale bien: sólo el código de salida dice algo.
+    code, out, err = run("pane", "run", pane, a["command"], timeout=30)
+    if code != 0:
+        say(f"  {a['name']}: no pude mandar el comando ({(err or out)[:160]})")
+        return False
+    return True
+
+
+def _new_pane(a, wid, path, prev_pane, label):
+    """Panel para el agente: split del anterior si lo pide, si no una pestaña nueva."""
+    if a["split"] and prev_pane:
+        cli = ["pane", "split", prev_pane, "--direction", a["split"], "--cwd", path, "--no-focus"]
+        if a["ratio"]:
+            cli += ["--ratio", str(a["ratio"])]
+        r = api(*cli)
+        return r["pane"]["pane_id"]
+    t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--no-focus")
+    return t["root_pane"]["pane_id"]
+
+
+def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms, say):
+    """Crea paneles y arranca los agentes de la lista. Devuelve True si todos quedaron bien."""
+    all_ok, prev_pane = True, None
+    for i, a in enumerate(agents):
+        a = dict(a)
+        if a["kind"] != SHELL_KIND:
+            a["name"] = agent_name(a["name"], taken)  # sufijo sólo si otro espacio ya usa ese nombre
+        try:
+            if i == 0 and first_pane:
+                pane = first_pane
+                if first_tab:
+                    try:
+                        api("tab", "rename", first_tab, a["name"])
+                    except AgentNavError:
+                        pass
+            else:
+                pane = _new_pane(a, wid, p["path"], prev_pane, a["name"])
+            if a["kind"] == SHELL_KIND:
+                time.sleep(0.4)  # el shell del panel nuevo tiene que llegar al prompt antes del comando
+                all_ok &= _start_shell(a, pane, say)
+            else:
+                all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say)
+            prev_pane = pane
+        except AgentNavError as e:
+            say(f"  {a['name']}: {e}")
+            all_ok = False
+    return all_ok
 
 
 def open_project(p, say=print, start_timeout_ms=90000):
@@ -212,55 +468,57 @@ def open_project(p, say=print, start_timeout_ms=90000):
     ensure_server(say)
     snap = snapshot()
     taken = {a.get("name") for a in snap["agents"] if a.get("name")}
-    wanted = p["agents"] or [p["name"]]
-    all_ok = True
+    wanted = p["agents"]
 
     ws = next((w for w in snap["workspaces"] if ws_label(w) == p["name"].lower()), None)
     if ws:
         wid = ws["workspace_id"]
         api("workspace", "focus", wid)
         live = {a.get("name") for a in snap["agents"] if a.get("workspace_id") == wid}
-        # El nombre "deseado" es el base saneado; falta si no hay un agente vivo con ese nombre en el espacio.
-        missing = [n for n in (agent_name(b, set()) for b in wanted) if n not in live]
+        # Sólo se reponen agentes que Herdr conoce; los paneles de shell no se distinguen de uno abierto a mano.
+        missing = [a for a in wanted if a["kind"] != SHELL_KIND and agent_name(a["name"], set()) not in live]
         if not missing:
             say(f"{p['name']}: ya estaba abierto, enfocado.")
             return "focused", True
-        say(f"{p['name']}: abierto; faltan {', '.join(missing)}.")
-        for desired in missing:
-            name = agent_name(desired, taken)  # sufijo sólo si otro espacio ya usa ese nombre
-            try:
-                t = api("tab", "create", "--workspace", wid, "--cwd", p["path"], "--label", name, "--no-focus")
-                all_ok &= _start_agent(p, name, t["root_pane"]["pane_id"], start_timeout_ms, say)
-            except AgentNavError as e:
-                say(f"  {name}: {e}")
-                all_ok = False
-        return "focused", all_ok
+        say(f"{p['name']}: abierto; faltan {', '.join(a['name'] for a in missing)}.")
+        missing = [dict(a, split=None) for a in missing]  # cada repuesto en su pestaña
+        return "focused", _place_agents(p, wid, missing, taken, None, None, start_timeout_ms, say)
 
     if not os.path.isdir(p["path"]):
         raise AgentNavError(f"{p['name']}: la carpeta no existe: {p['path']}")
     say(f"{p['name']}: abriendo espacio en {p['path']}…")
     r = api("workspace", "create", "--cwd", p["path"], "--label", p["name"])
     wid = r["workspace"]["workspace_id"]
-    root_pane = r["root_pane"]["pane_id"]
-    root_tab = r["tab"]["tab_id"]
+    ok = _place_agents(p, wid, wanted, taken, r["root_pane"]["pane_id"], r["tab"]["tab_id"], start_timeout_ms, say)
+    return "created", ok
 
-    for i, base in enumerate(wanted):
-        name = agent_name(base, taken)
+
+def close_project(p, say=print, grace=5.0):
+    """Cierra el espacio del proyecto. A los Claude les manda /exit primero para que disparen SessionEnd."""
+    snap = snapshot()
+    ws = next((w for w in snap["workspaces"] if ws_label(w) == p["name"].lower()), None)
+    if not ws:
+        say(f"{p['name']}: no estaba abierto.")
+        return False
+    wid = ws["workspace_id"]
+    claudes = [a for a in snap["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude" and a.get("pane_id")]
+    for a in claudes:
         try:
-            if i == 0:
-                pane = root_pane
-                try:
-                    api("tab", "rename", root_tab, name)
-                except AgentNavError:
-                    pass
-            else:
-                t = api("tab", "create", "--workspace", wid, "--cwd", p["path"], "--label", name, "--no-focus")
-                pane = t["root_pane"]["pane_id"]
-            all_ok &= _start_agent(p, name, pane, start_timeout_ms, say)
-        except AgentNavError as e:
-            say(f"  {name}: {e}")
-            all_ok = False
-    return "created", all_ok
+            api("pane", "send-text", a["pane_id"], "/exit")
+            api("pane", "send-keys", a["pane_id"], "enter")
+        except AgentNavError:
+            pass
+    if claudes:
+        say(f"{p['name']}: saliendo de {len(claudes)} Claude…")
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            alive = [a for a in snapshot()["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude"]
+            if not alive:
+                break
+    api("workspace", "close", wid)
+    say(f"{p['name']}: espacio {wid} cerrado.")
+    return True
 
 
 def attach(say=print):
@@ -307,16 +565,17 @@ def agent_line(a):
 
 def cmd_list():
     projects = load_projects()
+    gits = git_info_all(projects)
     if not server_running():
         print("servidor de Herdr: no corre (agentnav up)")
         for p in projects:
-            print(f"  {p['name']:<14} {p['path']}")
+            print(f"  {p['name']:<14} {git_text(gits.get(p['name'])):<18} {p['path']}")
         return 0
     snap = snapshot()
     rows, loose = describe(snap, projects)
     for p, wid, agents in rows:
         state = f"abierto {wid}" if wid else "cerrado"
-        print(f"{p['name']:<14} {state:<12} {p['path']}")
+        print(f"{p['name']:<14} {state:<12} {git_text(gits.get(p['name'])):<18} {p['path']}")
         for a in agents:
             print("    " + agent_line(a))
     if loose:
@@ -327,14 +586,251 @@ def cmd_list():
     return 0
 
 
-def cmd_open(name):
+def _project_or_die(name):
     p = find_project(load_projects(), name)
     if not p:
         raise AgentNavError(f"no hay un proyecto '{name}' en {PROJECTS_PATH}")
-    open_project(p)
+    return p
+
+
+def cmd_open(name):
+    open_project(_project_or_die(name))
     if not inside_herdr():
         attach()
     return 0
+
+
+def cmd_close(name):
+    if not server_running():
+        raise AgentNavError("el servidor de Herdr no corre")
+    close_project(_project_or_die(name))
+    return 0
+
+
+def cmd_recent():
+    for r in recent_projects(load_projects(), limit=20):
+        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['when']))}  {r['path']}")
+    return 0
+
+
+# ---------------------------------------------------------------- diario
+
+def _journal_path(day):
+    return os.path.join(JOURNAL_DIR, day + ".log")
+
+
+def read_journal(day):
+    """Líneas del hook: HH:MM:SS<TAB>cwd<TAB>sid<TAB>evento<TAB>texto."""
+    path = _journal_path(day)
+    if not os.path.isfile(path):
+        return []
+    out = []
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\r\n").split("\t", 4)
+            if len(parts) < 4:
+                continue
+            while len(parts) < 5:
+                parts.append("")
+            out.append({"time": parts[0], "cwd": parts[1], "sid": parts[2], "event": parts[3], "text": parts[4]})
+    return out
+
+
+def _secs(hms):
+    try:
+        h, m, s = (int(x) for x in hms.split(":"))
+        return h * 3600 + m * 60 + s
+    except ValueError:
+        return None
+
+
+def _fmt_dur(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h {(seconds % 3600) // 60:02d} min"
+
+
+def cmd_hoy(arg):
+    arg = (arg or "").strip().lower()
+    if arg in ("", "hoy"):
+        day = time.strftime("%Y-%m-%d")
+    elif arg == "ayer":
+        day = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+    elif re.match(r"^\d{4}-\d{2}-\d{2}$", arg):
+        day = arg
+    else:
+        raise AgentNavError("uso: agentnav hoy [ayer|AAAA-MM-DD]")
+    entries = read_journal(day)
+    if not entries:
+        print(f"{day}: sin actividad registrada (el diario sólo anota los Claude que corren dentro de Herdr).")
+        return 0
+    projects = load_projects()
+    by_path = {_norm_path(p["path"]): p["name"] for p in projects}
+
+    def project_of(cwd):
+        k = _norm_path(cwd) if cwd else ""
+        if k in by_path:
+            return by_path[k]
+        for path, name in by_path.items():
+            if k.startswith(path + os.sep):
+                return name + " (subcarpeta)"
+        return os.path.basename(k) or cwd or "?"
+
+    groups = {}
+    for e in entries:
+        groups.setdefault(project_of(e["cwd"]), []).append(e)
+    print(paint(f" {day} ", "7"))
+    for name, evs in groups.items():
+        prompts = [e for e in evs if e["event"] == "prompt"]
+        blocked = [e for e in evs if e["event"] == "blocked"]
+        active, open_at = 0, {}
+        for e in evs:
+            t = _secs(e["time"])
+            if t is None:
+                continue
+            if e["event"] == "prompt":
+                open_at[e["sid"]] = t
+            elif e["event"] in ("stop", "end") and e["sid"] in open_at:
+                active += max(0, t - open_at.pop(e["sid"]))
+        sessions = len({e["sid"] for e in evs if e["sid"]})
+        head = f"{name}: {len(prompts)} pedidos, {sessions} sesión(es), ~{_fmt_dur(active)} trabajando"
+        if blocked:
+            head += f", {len(blocked)} veces pidió permiso"
+        print()
+        print(paint(head, "1"))
+        for e in prompts:
+            print(f"  {e['time'][:5]}  {e['text'][:110]}")
+    return 0
+
+
+# ---------------------------------------------------------------- avisos (ntfy)
+
+def ntfy_send(title, body, settings=None):
+    """Publica en ntfy según settings.json. Devuelve None si salió, o el motivo como texto."""
+    import base64
+    import urllib.request
+    cfg = (settings if settings is not None else load_settings()).get("ntfy") or {}
+    topic = str(cfg.get("topic") or "").strip()
+    if not topic:
+        return "ntfy apagado: no hay topic en settings.json"
+    server = str(cfg.get("server") or "https://ntfy.sh").rstrip("/")
+    req = urllib.request.Request(f"{server}/{topic}", data=body.encode("utf-8"), method="POST")
+    req.add_header("Title", "=?UTF-8?B?" + base64.b64encode(title.encode("utf-8")).decode("ascii") + "?=")
+    req.add_header("Tags", "robot")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read()
+    except Exception as e:  # cualquier fallo de red se devuelve como texto
+        return f"ntfy: {e}"
+    return None
+
+
+def cmd_ntfy_test():
+    err = ntfy_send("AgentNav", "aviso de prueba: si lo ves en el teléfono, los avisos funcionan.")
+    if err:
+        raise AgentNavError(err)
+    print("aviso enviado.")
+    return 0
+
+
+# ---------------------------------------------------------------- doctor
+
+def cmd_doctor():
+    results = []  # (True|False|None, texto)  None = aviso, no cuenta como problema
+
+    def check(ok, text):
+        results.append((ok, text))
+
+    # Herdr
+    try:
+        hb = herdr_bin()
+        code, out, err = run("--version", timeout=10)
+        check(True, f"herdr: {hb} ({(out or err).strip() or 'versión desconocida'})")
+        up = server_running()
+        check(up, "servidor de Herdr corriendo" if up else "servidor de Herdr NO corre (agentnav up)")
+    except AgentNavError as e:
+        check(False, str(e))
+    cur = os.path.join(USERPROFILE, ".herdr", "packages", "standalone", "current")
+    on_path = [d for d in os.environ.get("PATH", "").split(os.pathsep) if "\\.herdr\\" in d.lower()]
+    if on_path and not any(_norm_path(d) == _norm_path(cur) for d in on_path):
+        check(None, f"PATH apunta a una versión fija de Herdr ({on_path[0]}); tras 'herdr update' conviene que apunte a {cur}")
+    # Config de Herdr
+    cfg_path = os.path.join(os.environ.get("APPDATA", ""), "herdr", "config.toml")
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = f.read()
+        check("agentnav.py pick" in cfg, "config.toml: popup del selector (prefix+alt+p)")
+        check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
+        check("[session]" in cfg and "resume_agents_on_restore = true" in cfg, "config.toml: agentes se reanudan al restaurar")
+    except OSError:
+        check(False, f"no encuentro {cfg_path}")
+    # Hooks de Claude Code
+    hook = os.path.join(CLAUDE_HOME, "hooks", "agentnav-state.ps1")
+    unblock = os.path.join(CLAUDE_HOME, "hooks", "agentnav-unblock.cmd")
+    if os.path.isfile(hook):
+        with open(hook, "rb") as f:
+            bom = f.read(3) == b"\xef\xbb\xbf"
+        check(bom, f"hook {os.path.basename(hook)} guardado como UTF-8 con BOM" if bom else f"hook {hook} SIN BOM: PowerShell 5.1 va a romper los acentos")
+    else:
+        check(False, f"falta el hook {hook}")
+    check(os.path.isfile(unblock), f"hook de desbloqueo {os.path.basename(unblock)}" if os.path.isfile(unblock) else f"falta {unblock}")
+    try:
+        settings = _read_json_file(os.path.join(CLAUDE_HOME, "settings.json"), "settings.json de Claude") or {}
+        hooks = settings.get("hooks") or {}
+
+        def registered(event, needle):
+            for block in hooks.get(event) or []:
+                for h in block.get("hooks") or []:
+                    if needle in str(h.get("command", "")):
+                        return True
+            return False
+
+        for ev, needle in (("UserPromptSubmit", "agentnav-state.ps1\" prompt"), ("Stop", "agentnav-state.ps1\" stop"),
+                           ("SessionEnd", "agentnav-state.ps1\" end"), ("Notification", "agentnav-state.ps1\" notify"),
+                           ("PostToolUse", "agentnav-unblock.cmd")):
+            check(registered(ev, needle), f"settings.json de Claude: hook {ev}")
+        check(registered("SessionStart", "herdr-agent-state.ps1"), "settings.json de Claude: hook propio de Herdr (SessionStart)")
+    except AgentNavError as e:
+        check(False, str(e))
+    # Registro y ajustes
+    try:
+        projects = load_projects()
+        check(True, f"projects.json: {len(projects)} proyecto(s)")
+        for p in projects:
+            if not os.path.isdir(p["path"]):
+                check(False, f"  {p['name']}: la carpeta no existe: {p['path']}")
+            if p["agents"] and p["agents"][0]["split"]:
+                check(None, f"  {p['name']}/{p['agents'][0]['name']}: 'split' en el primer agente no tiene de qué dividir; va en pestaña")
+    except AgentNavError as e:
+        check(False, str(e))
+    try:
+        st = load_settings()
+        topic = str((st.get("ntfy") or {}).get("topic") or "")
+        check(None, f"avisos ntfy: {'topic configurado' if topic else 'apagados (settings.json → ntfy.topic)'}")
+    except AgentNavError as e:
+        check(False, str(e))
+    # Arranque, Python, Windows Terminal
+    vbs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Herdr server.vbs")
+    check(os.path.isfile(vbs), "arranque automático del servidor (Herdr server.vbs en Inicio)" if os.path.isfile(vbs) else f"falta {vbs}")
+    check(bool(shutil.which("wt.exe") or shutil.which("wt")), "Windows Terminal (wt.exe)")
+    check(True, f"Python {sys.version.split()[0]} en {sys.executable}")
+    check(bool(shutil.which("git")), "git (para rama y cambios en el selector)")
+
+    bad = 0
+    for ok, text in results:
+        if ok is True:
+            print(paint("✔", "32") + " " + text)
+        elif ok is None:
+            print(paint("•", "33") + " " + text)
+        else:
+            bad += 1
+            print(paint("✖", "31") + " " + text)
+    print()
+    print("todo en orden." if not bad else f"{bad} problema(s).")
+    return 1 if bad else 0
 
 
 # ---------------------------------------------------------------- selector (popup)
@@ -389,27 +885,39 @@ def _ask(prompt):
 def cmd_pick():
     projects = load_projects()
     sel, msg = 0, ""
-    snap = None
+    snap, gits, recents = None, {}, []
     while True:
         if snap is None:
             try:
                 snap = snapshot()
             except AgentNavError as e:
                 snap, msg = {"workspaces": [], "agents": []}, str(e)
+            gits = git_info_all(projects, wait=1.5)
+            recents = recent_projects(projects)
         rows, loose = describe(snap, projects)
-        sel = min(sel, max(0, len(rows) - 1))
+        items = [("project", r) for r in rows] + [("recent", r) for r in recents]
+        sel = min(sel, max(0, len(items) - 1))
         sys.stdout.write("\x1b[2J\x1b[H")
         print(paint(" AgentNav · proyectos ", "7"))
         print()
         if not rows:
             print("  (sin proyectos: 'a' para agregar uno, o editá projects.json)")
-        for i, (p, wid, agents) in enumerate(rows):
+        for i, (kind, r) in enumerate(items):
             cursor = "▶" if i == sel else " "
-            dot = paint("●", "32") if wid else paint("○", "2")
-            line = f" {cursor} {dot} {p['name']:<14} {p['path']}"
-            print(paint(line, "7") if i == sel else line)
-            for a in agents:
-                print("        " + agent_line(a))
+            if kind == "project":
+                p, wid, agents = r
+                dot = paint("●", "32") if wid else paint("○", "2")
+                line = f" {cursor} {dot} {p['name']:<14} {git_text(gits.get(p['name'])):<16} {p['path']}"
+                print(paint(line, "7") if i == sel else line)
+                for a in agents:
+                    print("        " + agent_line(a))
+            else:
+                if i == len(rows):
+                    print()
+                    print(paint("  recientes (Enter los registra y abre):", "2"))
+                when = time.strftime("%d/%m %H:%M", time.localtime(r["when"]))
+                line = f" {cursor}   {os.path.basename(r['path']):<14} {when:<16} {r['path']}"
+                print(paint(line, "7") if i == sel else paint(line, "2"))
         if loose:
             print()
             print(paint("  fuera de proyectos:", "2"))
@@ -425,7 +933,7 @@ def cmd_pick():
         if k in ("up", "k"):
             sel = max(0, sel - 1)
         elif k in ("down", "j"):
-            sel = min(max(0, len(rows) - 1), sel + 1)
+            sel = min(max(0, len(items) - 1), sel + 1)
         elif k == "r":
             projects, snap, msg = load_projects(), None, ""
         elif k == "a":
@@ -440,10 +948,18 @@ def cmd_pick():
                     msg = str(e)
             else:
                 msg = "no agregado: falta el nombre o la ruta no existe"
-        elif k == "enter" and rows:
-            p = rows[sel][0]
+        elif k == "enter" and items:
+            kind, r = items[sel]
             print()
             try:
+                if kind == "recent":
+                    name = os.path.basename(r["path"]) or r["path"]
+                    add_project(name, r["path"])
+                    projects = load_projects()
+                    p = find_project(projects, name)
+                    print(f"  registrado {name}")
+                else:
+                    p = r[0]
                 # Timeout corto: el popup es modal y el usuario no puede responder nada mientras esperamos.
                 _, ok = open_project(p, say=lambda s: print("  " + s), start_timeout_ms=20000)
                 if not ok:
@@ -458,6 +974,7 @@ def cmd_pick():
 
 def main(argv):
     cmd = (argv[0] if argv else "").lower()
+    rest = " ".join(argv[1:])
     if cmd in ("", "go"):
         ensure_server()
         if inside_herdr():
@@ -468,11 +985,23 @@ def main(argv):
     if cmd == "list":
         return cmd_list()
     if cmd == "open":
-        if len(argv) < 2:
+        if not rest:
             raise AgentNavError("uso: agentnav open <nombre>")
-        return cmd_open(" ".join(argv[1:]))
+        return cmd_open(rest)
+    if cmd == "close":
+        if not rest:
+            raise AgentNavError("uso: agentnav close <nombre>")
+        return cmd_close(rest)
     if cmd == "pick":
         return cmd_pick()
+    if cmd in ("recent", "recientes"):
+        return cmd_recent()
+    if cmd in ("hoy", "today", "diario"):
+        return cmd_hoy(rest)
+    if cmd == "doctor":
+        return cmd_doctor()
+    if cmd in ("ntfy-test", "ntfy"):
+        return cmd_ntfy_test()
     if cmd == "up":
         print("servidor arriba." if ensure_server() else "servidor ya corría.")
         return 0

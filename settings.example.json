@@ -1,0 +1,7 @@
+{
+  "ntfy": {
+    "topic": "",
+    "server": "https://ntfy.sh",
+    "min_seconds": 120
+  }
+}

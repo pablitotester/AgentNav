@@ -232,11 +232,33 @@ agentnav list         # proyectos y agentes con estado, en texto, para scripts o
 </ul>
 <h3>Límites conocidos que no son bugs</h3>
 <ul>
-  <li>Claude Code no avisa cuando concedés un permiso: el panel queda en <span class="pill blocked">blocked</span> hasta el próximo <code>Stop</code>. Arreglarlo pide un hook en cada llamada a herramienta, unos 300 ms cada una; con tu Claude en modo auto casi nunca hay permisos, así que no vale la pena.</li>
+  <li><s>Claude Code no avisa cuando concedés un permiso: el panel queda en <span class="pill blocked">blocked</span> hasta el próximo <code>Stop</code>.</s> Resuelto el 30/10 con el hook de desbloqueo (ver "Ampliación · 30/10"): cuesta unos 60 ms por herramienta mientras nadie está bloqueado.</li>
   <li><code>Stop</code> no dispara si interrumpís un turno con Esc: queda <span class="pill working">working</span> hasta el <code>idle_prompt</code>, alrededor de un minuto, o el siguiente prompt.</li>
   <li>Al cerrar un panel desde Herdr, el <code>SessionEnd</code> llega tarde y el panel ya no existe. Inofensivo; la traza lo marca como "pane ya cerrado (ok)".</li>
   <li>El instalador pone en el PATH la carpeta de la versión, no <code>current</code>; <code>herdr update</code> la actualiza. El <code>.vbs</code> y el script usan <code>current</code>, que es una junction y no se desactualiza.</li>
 </ul>
+
+<h2>Ampliación · 30/10</h2>
+<p>Nueve agregados sobre la misma base, todos probados en vivo contra Herdr 0.9.5 antes de escribirlos acá. Ninguno toca la interfaz de Herdr: siguen siendo el script, el hook y el registro.</p>
+<ul>
+  <li><b>Retomar la conversación.</b> <code>"continue": true</code> en un proyecto o en un agente agrega <code>--continue</code> al arrancar Claude, pero sólo si existe una conversación guardada para esa carpeta (<code>~/.claude/projects/&lt;ruta codificada&gt;/*.jsonl</code>); sin conversación, Claude con <code>--continue</code> saldría con error. También acepta <code>"args": [...]</code> crudos por agente o por proyecto. Herdr pasa lo que va después de <code>--</code> tal cual: la respuesta de <code>agent start</code> muestra <code>argv: ["claude","--continue"]</code>.</li>
+  <li><b>Paneles de shell.</b> Un agente con <code>"kind": "shell"</code> no es un agente para Herdr: es un panel común con nombre y, si lo pide, un comando inicial (<code>"command"</code>). <code>"split": "right"|"down"</code> y <code>"ratio"</code> lo ponen al lado del agente anterior en la misma pestaña; sin <code>split</code> va en pestaña propia. Un espacio puede así nacer con Claude a la izquierda y un logcat a la derecha. Detalle de la CLI: <code>pane run</code> no devuelve JSON cuando sale bien, sólo código de salida. Los paneles de shell no se reponen al re-abrir un proyecto porque no se distinguen de uno abierto a mano.</li>
+  <li><b>Recientes.</b> El selector lista debajo de los registrados las carpetas donde corrió Claude Code y no están en <code>projects.json</code>, leyendo el <code>cwd</code> de la última conversación de cada carpeta de <code>~/.claude/projects</code> (el nombre de la carpeta codifica la ruta con guiones y es ambiguo, el jsonl no). Enter sobre uno lo registra con el nombre de la carpeta y lo abre.</li>
+  <li><b>Rama y cambios.</b> Columna con la rama y la cantidad de archivos modificados (<code>git status --porcelain -uno</code>, sin untracked) por proyecto, en hilos con 4 s de tope para que Nevatars no frene el popup. También en <code>agentnav list</code>.</li>
+  <li><b>Diario.</b> El hook escribe una línea por evento en <code>%LOCALAPPDATA%\AgentNav\journal\AAAA-MM-DD.log</code> (hora, cwd, sesión, evento, texto); <code>agentnav hoy</code> agrupa por proyecto, cuenta pedidos y sesiones, suma el tiempo entre cada prompt y su Stop, y lista los pedidos con hora. Sólo anota Claude que corren dentro de Herdr, igual que el resto del hook.</li>
+  <li><b>Desbloqueo.</b> Hook <code>PostToolUse</code> a través de <code>agentnav-unblock.cmd</code>, que sólo lanza PowerShell si existe <code>%LOCALAPPDATA%\AgentNav\blocked.flag</code>. La bandera la mantiene el hook: aparece cuando una sesión reporta "pide permiso" y desaparece cuando ya no queda ninguna. Medido: 56–80 ms por herramienta sin bandera, ~260 ms con bandera, 430 ms el desbloqueo real. Trampa evitada: <code>if exist carpeta\*</code> es verdadero con la carpeta vacía (el comodín matchea "." y ".."), por eso es un archivo y no la carpeta. Verificado con un Claude real en <code>--permission-mode default</code>: Claude Code manda la notificación <code>permission_prompt</code> recién cuando el pedido lleva un rato esperando (Herdr lo detecta por pantalla antes); al aprobar, el PostToolUse volvió el panel a working y después a done.</li>
+  <li><b>Aviso al teléfono.</b> <code>settings.json</code> → <code>ntfy.topic</code>; el hook publica en ntfy cuando un turno termina o pide permiso, sólo si llevaba al menos <code>min_seconds</code> (120 por defecto). Título con el nombre de la carpeta, cuerpo con el pedido. <code>agentnav ntfy-test</code> manda uno de prueba. Con el topic vacío no hace nada ni toca la red.</li>
+  <li><b>Doctor.</b> <code>agentnav doctor</code> revisa binario y versión de Herdr, servidor, las tres claves del <code>config.toml</code> que importan, el BOM del hook, los cinco hooks en el <code>settings.json</code> de Claude, el hook propio de Herdr, el registro y sus carpetas, el <code>.vbs</code> de Inicio, Windows Terminal, Python y git. Sale con 1 si algo falla.</li>
+  <li><b>Cerrar.</b> <code>agentnav close &lt;nombre&gt;</code> manda <code>/exit</code> a cada Claude del espacio, espera hasta 5 s a que desaparezcan y cierra el espacio. Verificado que así sí dispara <code>SessionEnd</code> (la traza lo muestra como <code>release</code>).</li>
+</ul>
+<p>Esquema completo de un proyecto en <code>projects.json</code>:</p>
+<pre><code>{
+  "name": "Nevatars", "path": "C:\\Nevatars\\nevatars", "continue": true,
+  "agents": [
+    "qa",
+    { "name": "logcat", "kind": "shell", "command": "adb logcat -s Unity", "split": "right", "ratio": 0.4 }
+  ]
+}</code></pre>
 
 <h2>Plan B · fork privado, solo si hace falta tocar la interfaz</h2>
 <p>Herdr es Apache 2.0, se puede forkear en privado sin pedir permiso. Lo que implica: instalar Rust y las Visual Studio Build Tools (hoy no hay ni <code>cargo</code> en esta PC), compilar un proyecto de 1.900 commits con un emulador de terminal vendorizado, y volver a aplicar cada cambio nuestro en cada versión nueva. El proyecto cierra automáticamente los pull requests no solicitados, así que nada volvería río arriba. Vale la pena solo si aparece algo concreto de la interfaz que no se arregla con el <code>config.toml</code>. Hoy no hay nada en esa lista.</p>

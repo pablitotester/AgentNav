@@ -15,8 +15,7 @@ Para volver al oficial: `herdr update`.
 [CmdletBinding()]
 param(
     [string]$Repo = "pablitotester/herdr",
-    [string]$Tag = "",
-    [string]$InstallDir = ""   # sólo para probar en una carpeta aparte; vacío = la instalación normal (%USERPROFILE%\.herdr)
+    [string]$Tag = ""
 )
 
 Set-StrictMode -Version Latest
@@ -59,14 +58,11 @@ try {
     $installer = Join-Path $tmp "install.ps1"
     Get-File "https://raw.githubusercontent.com/$Repo/agentnav/distribution/install.ps1" $installer
     Step "Instalador oficial de Herdr con el manifiesto del fork"
-    $extra = @{}
-    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) { $extra["InstallDir"] = $InstallDir }
-    & $installer -Channel stable -ManifestUrl $assets["agentnav-latest.json"] @extra
+    & $installer -Channel stable -ManifestUrl $assets["agentnav-latest.json"]
     if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "el instalador oficial salió con $LASTEXITCODE" }
 
     # 3. ¿Quedó nuestro exe? Si la versión ya existía con el oficial, el instalador no tocó nada: lo cambiamos nosotros.
-    $root = if ([string]::IsNullOrWhiteSpace($InstallDir)) { Join-Path $env:USERPROFILE ".herdr" } else { $InstallDir }
-    $current = Join-Path $root "packages\standalone\current"
+    $current = Join-Path $env:USERPROFILE ".herdr\packages\standalone\current"
     $exe = Join-Path $current "herdr.exe"
     if (-not (Test-Path -LiteralPath $exe)) { throw "no encuentro $exe después de instalar" }
     $shaFile = Join-Path $tmp "herdr.exe.sha256"
@@ -91,7 +87,7 @@ try {
     $v = (& $exe --version | Out-String).Trim()
     Step "Listo: $v con temas AgentNav en $current"
     $agentnav = Get-Command agentnav -ErrorAction SilentlyContinue
-    if ($null -ne $agentnav -and [string]::IsNullOrWhiteSpace($InstallDir)) {
+    if ($null -ne $agentnav) {
         Step "AgentNav está en esta PC: levanto Herdr de nuevo (agentnav app)"
         & agentnav app
     } else {

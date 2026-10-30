@@ -4,5 +4,8 @@
     "server": "https://ntfy.sh",
     "min_seconds": 120,
     "min_seconds_blocked": 0
+  },
+  "herdr_fork": {
+    "repo": ""
   }
 }

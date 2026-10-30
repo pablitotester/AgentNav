@@ -46,11 +46,12 @@ agentnav recent              carpetas donde usaste Claude Code y no están regis
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, arranque, registro
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
+agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); --force si hay agentes ocupados
 agentnav ntfy-test           aviso de prueba al teléfono
 agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
 ```
 
-Temas: `ctrl+b`, soltar, `alt+t` abre el selector dentro de Herdr (flechas, Enter aplica y se ve al instante). La lista propia de Herdr (`ctrl+b s`) está compilada en el programa y no admite entradas nuevas, por eso el selector es de AgentNav. Desde consola: `agentnav theme` lista y `agentnav theme matrix` aplica. Las paletas propias viven en `config\themes.json` (cs16 = consola de Counter-Strike 1.6, matrix, procomm = Procomm Plus de DOS) y se escriben como `[theme.custom]` sobre el tema base en el `config.toml`, con recarga inmediata. Pintan la interfaz de Herdr (barra lateral, pestañas, bordes, popup); el texto dentro de cada panel lo pinta el programa que corre ahí.
+Temas: `ctrl+b`, soltar, `alt+t` abre el selector dentro de Herdr (flechas, Enter aplica y se ve al instante). La lista propia de Herdr (`ctrl+b s`) está compilada en el programa y no admite entradas nuevas; para tenerlas ahí hay un **Herdr propio** (ver abajo) y, con ése instalado, el selector escribe el nombre del tema como cualquier otro, sin bloque `custom`. Desde consola: `agentnav theme` lista y `agentnav theme matrix` aplica. Las paletas propias viven en `config\themes.json` (cs16 = consola de Counter-Strike 1.6, matrix, procomm = Procomm Plus de DOS) y se escriben como `[theme.custom]` sobre el tema base en el `config.toml`, con recarga inmediata. Pintan la interfaz de Herdr (barra lateral, pestañas, bordes, popup); el texto dentro de cada panel lo pinta el programa que corre ahí.
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
 
@@ -99,6 +100,23 @@ y cuando pide permiso y llevaba al menos `min_seconds_blocked` (0: siempre, porq
 pocos segundos). En el teléfono: app ntfy, suscribirse al mismo topic. **El topic de ntfy.sh es público y adivinable**:
 viaja el nombre de la carpeta y los primeros 160 caracteres del pedido. Elegí un nombre largo y al azar, o usá un
 servidor propio.
+
+## Herdr propio: los temas dentro de la pantalla de settings
+
+Herdr no tiene temas de usuario, así que las tres paletas aparecen en `ctrl+b s → theme` sólo con un `herdr.exe` compilado
+desde un fork. El fork vive en GitHub (`settings.json → herdr_fork.repo`), rama `agentnav`: el código oficial del último
+tag más **un solo commit** que agrega `src/app/palette_agentnav.rs` y tres líneas por archivo en `theme.rs`, `state.rs` y
+`mod.rs`. Un workflow (`.github/workflows/agentnav-build.yml`) corre a diario: si upstream publicó un tag nuevo, rebasa el
+commit, compila `herdr.exe` para Windows con el mismo toolchain, Zig y flags que el release oficial, corre los tests de
+temas y publica un release `agentnav-vX.Y.Z`. Si el rebase choca, abre un issue en el fork y no publica.
+
+En la PC, `agentnav herdr-sync` baja ese release, verifica el SHA-256, guarda el oficial como `herdr.exe.oficial`, para el
+servidor, reemplaza el exe y levanta todo de nuevo (`agentnav app`). Si el fork va por una versión más nueva que la
+instalada, antes corre `herdr update` para que el instalador oficial traiga su carpeta y sus archivos de conpty, y recién
+después pisa el exe. `doctor` dice si el exe instalado es el del fork, si `herdr update` lo pisó y si el fork tiene un
+build más nuevo. Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
+
+Copias de referencia del parche y del workflow: `herdr-fork\` en este repo.
 
 ## Límites conocidos del estado
 

@@ -1,0 +1,161 @@
+# AgentNav: Herdr con tres temas extra (cs16, matrix, procomm), siempre al día con upstream.
+#
+# Una vez por día (o a mano) mira el último tag v* de herdrdev/herdr. Si es más nuevo que agentnav/BASE_TAG,
+# rebasa la rama `agentnav` (un solo commit: paletas + este workflow) sobre ese tag y la vuelve a subir.
+# Después compila herdr.exe para Windows x86_64 igual que el release oficial (mismo toolchain, Zig y flags)
+# y publica un release `agentnav-<tag>` con el exe y su SHA-256. En la PC, `agentnav herdr-sync` lo baja.
+# Si el rebase choca, no toca nada: abre un issue en este fork y falla.
+
+name: AgentNav build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag de upstream a usar (vacío = el último v*)"
+        required: false
+        default: ""
+      force:
+        description: "recompilar aunque el release ya exista"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sync:
+    name: Rebase sobre el último tag de upstream
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      build: ${{ steps.pick.outputs.build }}
+      zig: ${{ steps.pick.outputs.zig }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agentnav
+          fetch-depth: 0
+
+      - name: Elegir tag y rebasar si hace falta
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          git config user.name "agentnav-bot"
+          git config user.email "agentnav-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/herdrdev/herdr.git
+          git fetch --quiet upstream 'refs/tags/v*:refs/tags/v*'
+          base="$(tr -d ' \r\n' < agentnav/BASE_TAG)"
+          if [ -n "$WANTED" ]; then
+            latest="$WANTED"
+          else
+            latest="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          fi
+          echo "base=$base latest=$latest"
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          zig="$(grep -A2 'setup-zig' .github/workflows/release.yml | grep -oE 'version: *[0-9][0-9.]*' | head -1 | grep -oE '[0-9][0-9.]*' || true)"
+          echo "zig=${zig:-0.16.0}" >> "$GITHUB_OUTPUT"
+          if [ "$latest" != "$base" ]; then
+            echo "rebasando agentnav de $base a $latest…"
+            if ! git rebase --onto "$latest" "$base" agentnav; then
+              git rebase --abort || true
+              gh issue create --title "Rebase a $latest chocó" \
+                --body "El commit de AgentNav no aplica limpio sobre $latest. Hay que rehacer el parche a mano (ver agentnav/README.md). Hasta entonces el release sigue en $base." || true
+              exit 1
+            fi
+            echo "$latest" > agentnav/BASE_TAG
+            git add agentnav/BASE_TAG
+            # Un solo commit por encima de upstream: el próximo rebase es trivial.
+            git reset --soft "$latest"
+            git commit -q -m "agentnav: tres temas extra (cs16, matrix, procomm) + workflow de build, base $latest"
+            git push --force-with-lease origin HEAD:agentnav
+            # Zig puede cambiar con la versión: releer del release.yml nuevo.
+            zig="$(grep -A2 'setup-zig' .github/workflows/release.yml | grep -oE 'version: *[0-9][0-9.]*' | head -1 | grep -oE '[0-9][0-9.]*' || true)"
+            echo "zig=${zig:-0.16.0}" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$FORCE" = "true" ] || ! gh release view "agentnav-$latest" >/dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release agentnav-$latest ya existe; nada que hacer."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Compilar herdr.exe (Windows x86_64)
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: windows-2022
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: "true"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agentnav
+
+      - name: Toolchain de Rust (el que pide rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup show
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Zig
+        uses: vercel-labs/setup-zig@v1
+        with:
+          version: ${{ needs.sync.outputs.zig }}
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: agentnav-x86_64-pc-windows-msvc
+
+      - name: Limpiar cachés de Zig
+        shell: bash
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Tests de temas (resolución, contraste, sidebar)
+        run: cargo test --release --locked --target x86_64-pc-windows-msvc --bin herdr -- built_in_theme built_in_active built_in_selection built_in_themes
+
+      - name: Verificar identidad del binario
+        shell: pwsh
+        run: |
+          $exe = "target\x86_64-pc-windows-msvc\release\herdr.exe"
+          $version = (& $exe --version | Out-String).Trim()
+          $tagVersion = "${{ needs.sync.outputs.tag }}" -replace '^v', ''
+          "version: $version"
+          if ($version -notmatch [regex]::Escape($tagVersion) -or $version -match "preview") { throw "versión inesperada: $version" }
+          $cfg = (& $exe --default-config | Out-String)
+          if ($cfg -notmatch "cs16") { "aviso: el --default-config no menciona cs16 (es sólo el comentario de ayuda)" }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $exe out\herdr.exe
+          $sha = (Get-FileHash out\herdr.exe -Algorithm SHA256).Hash.ToLower()
+          "$sha *herdr.exe" | Set-Content -NoNewline out\herdr.exe.sha256
+          @{ tag = "${{ needs.sync.outputs.tag }}"; sha256 = $sha; built = (Get-Date).ToUniversalTime().ToString("o"); source = "${{ github.server_url }}/${{ github.repository }}/tree/agentnav" } | ConvertTo-Json | Set-Content out\agentnav-build.json
+
+      - name: Publicar release agentnav-<tag>
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="agentnav-${{ needs.sync.outputs.tag }}"
+          notes="Herdr ${{ needs.sync.outputs.tag }} compilado desde la rama agentnav: upstream + tres temas extra (cs16, matrix, procomm). Sólo el herdr.exe: los archivos de conpty son los del instalador oficial. Instalar con: agentnav herdr-sync"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" out/herdr.exe out/herdr.exe.sha256 out/agentnav-build.json --clobber
+          else
+            gh release create "$tag" out/herdr.exe out/herdr.exe.sha256 out/agentnav-build.json \
+              --target agentnav --title "Herdr ${{ needs.sync.outputs.tag }} + temas AgentNav" --notes "$notes" --latest
+          fi

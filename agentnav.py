@@ -20,6 +20,9 @@ Uso:
   agentnav theme [nombre]  tema de colores de Herdr. Sin nombre: selector con flechas (es lo que corre el popup
                            ctrl+b alt+t; `theme list` sólo imprime). Con nombre lo aplica y recarga al instante.
                            Paletas propias en config\\themes.json: cs16, matrix, procomm; más los temas de Herdr
+  agentnav herdr-sync      instala el último herdr.exe del fork con los temas de AgentNav (settings.json → herdr_fork.repo):
+                           verifica el SHA-256, guarda el oficial como herdr.exe.oficial y reinicia el servidor.
+                           --force lo hace aunque haya agentes trabajando
   agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
@@ -1518,6 +1521,172 @@ def ntfy_send(title, body, settings=None):
     return None
 
 
+# ---------------------------------------------------------------- herdr propio (fork con los temas de AgentNav)
+
+def fork_repo():
+    """owner/herdr del fork en GitHub (settings.json → herdr_fork.repo); vacío si no está configurado."""
+    try:
+        return str((load_settings().get("herdr_fork") or {}).get("repo") or "").strip().strip("/")
+    except AgentNavError:
+        return ""
+
+
+def herdr_release_dir():
+    """Carpeta real a la que apunta packages/standalone/current (ahí viven herdr.exe y conpty)."""
+    return os.path.realpath(os.path.join(USERPROFILE, ".herdr", "packages", "standalone", "current"))
+
+
+def file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v))[:3])
+
+
+def installed_herdr_version():
+    code, out, err = run("--version", timeout=15)
+    m = re.search(r"herdr\s+(\d+\.\d+\.\d+\S*)", out + err)
+    return m.group(1) if m else ""
+
+
+def _http_json(url, timeout=15):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "AgentNav"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def _http_download(url, dest, timeout=120):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "AgentNav"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+        shutil.copyfileobj(r, f)
+
+
+def fork_latest_release(repo):
+    """El release agentnav-vX.Y.Z más nuevo del fork, o None. API pública de GitHub, sin token."""
+    try:
+        data = _http_json(f"https://api.github.com/repos/{repo}/releases?per_page=20")
+    except Exception as e:
+        raise AgentNavError(f"no pude consultar los releases de {repo}: {e}")
+    rels = [r for r in data if str(r.get("tag_name") or "").startswith("agentnav-v") and not r.get("draft")]
+    if not rels:
+        return None
+    r = max(rels, key=lambda x: _ver_tuple(x["tag_name"]))
+    return {"tag": r["tag_name"], "version": r["tag_name"][len("agentnav-v"):], "url": r.get("html_url") or "",
+            "assets": {a["name"]: a["browser_download_url"] for a in r.get("assets") or []}}
+
+
+def herdr_build_marker_path():
+    return os.path.join(herdr_release_dir(), "agentnav-build.json")
+
+
+def herdr_is_ours():
+    """(True si el herdr.exe instalado es el build del fork, False si es el oficial, None si no se sabe; detalle)."""
+    exe = os.path.join(herdr_release_dir(), "herdr.exe")
+    marker = _read_json_file(herdr_build_marker_path(), "agentnav-build.json")
+    if not os.path.isfile(exe):
+        return None, "no encuentro herdr.exe"
+    if not marker:
+        return False, "sin marcador: herdr.exe oficial"
+    try:
+        same = file_sha256(exe) == str(marker.get("sha256") or "").lower()
+    except OSError as e:
+        return None, str(e)
+    return (True, f"build del fork {marker.get('tag')}") if same else (False, f"herdr.exe no coincide con el marcador {marker.get('tag')}: lo pisó herdr update")
+
+
+def _wait_herdr_gone(timeout=25.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        server, clients = herdr_processes()
+        if not server and not clients:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def cmd_herdr_sync(argv, say=print):
+    repo = fork_repo()
+    if not repo:
+        raise AgentNavError("falta settings.json → herdr_fork.repo (por ejemplo \"pablo/herdr\")")
+    rel = fork_latest_release(repo)
+    if not rel:
+        raise AgentNavError(f"{repo} todavía no publicó ningún release agentnav-v*: lanzá el workflow 'AgentNav build' en GitHub → Actions")
+    if "herdr.exe" not in rel["assets"] or "herdr.exe.sha256" not in rel["assets"]:
+        raise AgentNavError(f"el release {rel['tag']} no tiene herdr.exe y su .sha256 ({rel['url']})")
+    inst = installed_herdr_version()
+    say(f"instalado: herdr {inst or '?'} · fork: {rel['tag']}")
+    if _ver_tuple(rel["version"]) > _ver_tuple(inst):
+        say("el fork va por una versión más nueva que la instalada: primero el instalador oficial (herdr update)…")
+        code, out, err = run("update", timeout=900)
+        if code != 0:
+            raise AgentNavError(f"herdr update falló: {(err or out)[-300:]}")
+        inst = installed_herdr_version()
+        if _ver_tuple(rel["version"]) != _ver_tuple(inst):
+            raise AgentNavError(f"tras herdr update quedó {inst} y el fork tiene {rel['version']}; probá de nuevo más tarde")
+    elif _ver_tuple(rel["version"]) < _ver_tuple(inst):
+        raise AgentNavError(f"tu Herdr ({inst}) es más nuevo que el último build del fork ({rel['version']}): el workflow corre a diario a las 06:17 UTC, o lanzalo a mano en GitHub → Actions")
+    # Descarga y verificación
+    dl = os.path.join(STATE_DIR, "herdr-download")
+    os.makedirs(dl, exist_ok=True)
+    new_exe, sha_file = os.path.join(dl, "herdr.exe"), os.path.join(dl, "herdr.exe.sha256")
+    say(f"bajando {rel['tag']}…")
+    try:
+        _http_download(rel["assets"]["herdr.exe.sha256"], sha_file, timeout=60)
+        _http_download(rel["assets"]["herdr.exe"], new_exe, timeout=600)
+    except Exception as e:
+        raise AgentNavError(f"descarga fallida: {e}")
+    with open(sha_file, encoding="utf-8") as f:
+        want = (f.read().split() or [""])[0].lower()
+    got = file_sha256(new_exe)
+    if not re.fullmatch(r"[0-9a-f]{64}", want) or got != want:
+        raise AgentNavError(f"SHA-256 no coincide (esperado {want[:12]}…, bajado {got[:12]}…); no instalo nada")
+    exe = os.path.join(herdr_release_dir(), "herdr.exe")
+    marker = {"tag": rel["tag"], "sha256": got, "repo": repo, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    if os.path.isfile(exe) and file_sha256(exe) == got:
+        with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
+            json.dump(marker, f, indent=2)
+        say(f"{rel['tag']} ya estaba instalado.")
+        return 0
+    # Nadie trabajando
+    snap = _snapshot_or_none()
+    busy = [a.get("name") or a.get("pane_id") for a in (snap or {}).get("agents", []) if a.get("agent_status") in ("working", "blocked")]
+    if busy and "--force" not in argv:
+        raise AgentNavError(f"hay agentes ocupados ({', '.join(map(str, busy))}); reinstalar reinicia todos los Claude. Cuando terminen, o agentnav herdr-sync --force")
+    ours, _ = herdr_is_ours()
+    official = exe + ".oficial"
+    if ours is False and not os.path.isfile(official):
+        shutil.copy2(exe, official)
+        say(f"oficial guardado en {official}")
+    if server_running():
+        say("parando el servidor de Herdr (los Claude se reanudan al volver)…")
+        run("server", "stop", timeout=30)
+    if not _wait_herdr_gone():
+        raise AgentNavError("todavía hay procesos herdr.exe vivos; cerrá la pestaña de Herdr y repetí")
+    last = None
+    for _ in range(10):
+        try:
+            shutil.copy2(new_exe, exe)
+            last = None
+            break
+        except PermissionError as e:
+            last = e
+            time.sleep(1)
+    if last:
+        raise AgentNavError(f"no pude reemplazar {exe}: {last}")
+    with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
+        json.dump(marker, f, indent=2)
+    say(f"herdr.exe reemplazado por {rel['tag']} (herdr {installed_herdr_version() or '?'}).")
+    return cmd_app(say)
+
+
 # ---------------------------------------------------------------- temas
 
 HERDR_THEMES = ("catppuccin", "catppuccin-latte", "terminal", "tokyo-night", "dracula", "nord", "gruvbox", "one-dark",
@@ -1590,7 +1759,9 @@ def render_theme_block(base, custom, label, keep):
 def apply_theme(name, say=print):
     themes = load_themes()
     low = name.strip().lower()
-    if low in themes:
+    if low in themes and herdr_is_ours()[0]:
+        base, custom, label = low, {}, low  # el herdr.exe del fork trae la paleta compilada: queda como tema nativo
+    elif low in themes:
         base, custom, label = themes[low]["base"], themes[low]["custom"], low
     elif low in HERDR_THEMES:
         base, custom, label = low, {}, low
@@ -1875,6 +2046,29 @@ def cmd_doctor():
     check(bits == 64, f"Python {sys.version.split()[0]} de {bits} bits en {sys.executable}" if bits == 64
           else f"Python de {bits} bits: el escaneo de procesos no funciona y 'continue' podría pisar una conversación abierta afuera")
     check(bool(shutil.which("git")), "git (para rama y cambios en el selector)")
+    # Herdr propio (fork con temas)
+    repo = fork_repo()
+    if repo:
+        ours, detail = herdr_is_ours()
+        if ours:
+            check(True, f"Herdr con los temas de AgentNav: {detail}")
+        elif ours is False and "pisó" in detail:
+            check(False, f"{detail}: agentnav herdr-sync lo vuelve a poner")
+        else:
+            check(None, f"Herdr oficial ({detail}); agentnav herdr-sync instala el del fork {repo}")
+        try:
+            rel = fork_latest_release(repo)
+            inst = installed_herdr_version()
+            if not rel:
+                check(None, f"el fork {repo} no publicó releases todavía")
+            elif _ver_tuple(rel["version"]) > _ver_tuple(inst):
+                check(None, f"el fork tiene {rel['tag']} y está instalado {inst}: agentnav herdr-sync")
+            elif _ver_tuple(rel["version"]) < _ver_tuple(inst):
+                check(None, f"Herdr {inst} es más nuevo que el último build del fork ({rel['tag']}); el workflow lo alcanza en su próxima corrida")
+            else:
+                check(True, f"fork {repo}: release {rel['tag']} al día con la versión instalada")
+        except AgentNavError as e:
+            check(None, str(e))
 
     bad = 0
     for ok, text in results:
@@ -2077,6 +2271,8 @@ def main(argv):
         return cmd_hoy(rest)
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd in ("herdr-sync", "herdr"):
+        return cmd_herdr_sync(argv[1:])
     if cmd in ("theme", "tema"):
         arg = rest.strip()
         return cmd_theme("" if arg in ("pick", "list") else arg, interactive=(True if arg == "pick" else False if arg == "list" else None))

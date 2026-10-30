@@ -22,7 +22,7 @@ help = "prefix+f1"
 # 30/10: ctrl+b c = pestaña de AgentNav: misma carpeta que el panel actual y el mismo agente
 # (si venías en un Claude, otro Claude con conversación nueva). El "+" de la barra hace lo mismo vía el plugin
 # C:\AgentNav\plugin (gancho tab.created → agentnav adopt). La pestaña pelada (shell en new_cwd) queda en ctrl+b shift+c,
-# creada por la API para que el plugin no la adopte; la tecla nativa de Herdr se desata.
+# con etiqueta "shell" para que el plugin no la adopte (adopta sólo las de etiqueta numérica); la tecla nativa de Herdr se desata.
 new_tab = ""
 
 [[keys.command]]

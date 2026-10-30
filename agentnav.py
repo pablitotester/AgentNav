@@ -762,9 +762,48 @@ def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms
     return all_ok
 
 
+ADOPT_PAUSE = os.path.join(STATE_DIR, "adopt-pause")
+
+
+_pause_depth = 0
+
+
+def adopt_paused(on):
+    """Mientras AgentNav arma un espacio (workspace create + agentes en sus paneles) el plugin no debe adoptar nada:
+    las pestañas que nacen ahí son suyas aunque todavía tengan la etiqueta numérica de Herdr.
+    Reentrante: `open` puede reponer otros proyectos (restore_projects) antes de abrir el suyo."""
+    global _pause_depth
+    _pause_depth = max(0, _pause_depth + (1 if on else -1))
+    try:
+        if on:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(ADOPT_PAUSE, "w") as f:
+                f.write(str(os.getpid()))
+        elif _pause_depth == 0 and os.path.isfile(ADOPT_PAUSE):
+            os.remove(ADOPT_PAUSE)
+    except OSError:
+        pass
+
+
+def adopt_is_paused(max_age=180):
+    """True si hay una pausa vigente (un archivo viejo es de un proceso que murió sin limpiar: se ignora)."""
+    try:
+        return time.time() - os.path.getmtime(ADOPT_PAUSE) < max_age
+    except OSError:
+        return False
+
+
 def open_project(p, say=print, start_timeout_ms=90000):
     """Abre el proyecto como espacio de Herdr, o lo enfoca y repone los agentes que falten.
     Devuelve (modo, todos_listos) con modo 'created' o 'focused'."""
+    adopt_paused(True)
+    try:
+        return _open_project(p, say, start_timeout_ms)
+    finally:
+        adopt_paused(False)
+
+
+def _open_project(p, say, start_timeout_ms):
     if ensure_server(say):
         restore_projects([q for q in load_projects() if q["name"] != p["name"]], say)
     snap = snapshot()
@@ -1053,13 +1092,13 @@ def _notify_error(fn):
 def cmd_tab(mode="", say=print, start_timeout_ms=90000):
     """agentnav tab: pestaña nueva en el espacio actual, en la carpeta del panel de origen y con el mismo agente.
     Un Claude nuevo arranca una conversación nueva (nunca --continue: la viva ya está en la otra pestaña).
-    `tab shell`: la pestaña pelada de siempre (shell en C:\\), creada por la API para que el plugin no la adopte."""
+    `tab shell`: la pestaña pelada de siempre (shell en C:\\), con etiqueta "shell" para que el plugin no la adopte."""
     snap = snapshot()
     wid, ws, pane, project = _tab_source(snap, load_projects())
     if mode == "shell":
         path = new_project_base()
         say(f"{ws.get('label') or wid}: pestaña de shell en {path}")
-        api("tab", "create", "--workspace", wid, "--cwd", path, "--focus")
+        api("tab", "create", "--workspace", wid, "--cwd", path, "--label", "shell", "--focus")
         return 0
     path = pane.get("cwd") or ""
     if not os.path.isdir(path):
@@ -1077,8 +1116,10 @@ def cmd_tab(mode="", say=print, start_timeout_ms=90000):
 
 def cmd_adopt(argv, say=print, start_timeout_ms=90000):
     """Gancho `tab.created` del plugin (C:\\AgentNav\\plugin). Herdr lo llama con HERDR_WORKSPACE_ID, HERDR_TAB_ID,
-    HERDR_PANE_ID y HERDR_PLUGIN_CONTEXT_JSON. Sólo adopta pestañas abiertas desde la interfaz (el "+" o la tecla de
-    Herdr): las que llegan por la API ya vienen armadas (las crea `tab`, `open`, o cualquier otro script).
+    HERDR_PANE_ID y HERDR_PLUGIN_CONTEXT_JSON. El "+" de la barra entra por la misma API que los scripts
+    (invocation_source = api en los dos casos), así que lo que distingue una pestaña pelada de Herdr es su etiqueta:
+    un número ("2", "3"…). Las que crea AgentNav llevan nombre (el del agente, o "shell"), y mientras `open` arma un
+    espacio hay una pausa para no pisar el panel donde está arrancando el agente.
     El gancho vuelve enseguida: el trabajo (esperar el prompt, cd, arrancar el Claude) sigue en un hijo suelto."""
     ctx = {}
     try:
@@ -1089,14 +1130,18 @@ def cmd_adopt(argv, say=print, start_timeout_ms=90000):
     if not (wid and tid and pid):
         say("adopt: faltan HERDR_WORKSPACE_ID / HERDR_TAB_ID / HERDR_PANE_ID; no hago nada.")
         return 0
-    if ctx.get("invocation_source") == "api":
-        say(f"adopt: {tid} vino por la API; la dejo como está.")
+    label = str(ctx.get("tab_label") or "")
+    if not re.fullmatch(r"\d+", label):
+        say(f"adopt: {tid} ya tiene nombre ({label!r}); la dejo como está.")
+        return 0
+    if adopt_is_paused():
+        say(f"adopt: {tid} nació mientras AgentNav arma un espacio; la dejo como está.")
         return 0
     if "--run" not in argv:
         subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "adopt", "--run"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-        say(f"adopt: {tid} ({ctx.get('invocation_source') or '?'}) se arma en segundo plano.")
+        say(f"adopt: {tid} se arma en segundo plano.")
         return 0
     return _adopt_run(wid, tid, pid, say, start_timeout_ms)
 
@@ -1105,8 +1150,11 @@ def cmd_adopt(argv, say=print, start_timeout_ms=90000):
 def _adopt_run(wid, tid, pid, say, start_timeout_ms):
     snap = snapshot()
     ws = next((w for w in snap["workspaces"] if w.get("workspace_id") == wid), None)
-    if not ws or not any(x.get("pane_id") == pid for x in snap.get("panes", [])):
+    mine = next((x for x in snap.get("panes", []) if x.get("pane_id") == pid), None)
+    if not ws or not mine:
         return 0  # la cerraron antes de que llegáramos
+    if mine.get("agent") or any(x.get("pane_id") == pid for x in snap["agents"]):
+        return 0  # alguien ya arrancó algo ahí
     project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
     a = _tab_agent(snap, wid, {}, project)  # sin panel de origen: el último agente vivo del espacio, o el registrado
     live = [x for x in snap["agents"] if x.get("workspace_id") == wid and x.get("pane_id") != pid]

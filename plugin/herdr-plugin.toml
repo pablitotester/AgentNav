@@ -1,7 +1,7 @@
 # Plugin local de AgentNav para Herdr (30/10). Enlazado con: herdr plugin link C:\AgentNav\plugin
-# Cada pestaña que se crea desde la interfaz (el "+" de la barra o ctrl+b shift+c) pasa por `agentnav adopt`,
-# que la lleva a la carpeta del proyecto y arranca el mismo agente, igual que ctrl+b c. Las pestañas que
-# llegan por la API (las de agentnav tab/open) ya vienen armadas y se dejan como están.
+# Cada pestaña nueva pasa por `agentnav adopt`. Las que nacen con la etiqueta numérica de Herdr ("2", "3"…),
+# que son las del "+" de la barra, se llevan a la carpeta del proyecto y arrancan el mismo agente, igual que
+# ctrl+b c. Las que ya traen nombre (las de agentnav tab/open: el agente, o "shell") se dejan como están.
 id = "agentnav"
 name = "AgentNav"
 version = "0.1.0"

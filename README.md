@@ -53,7 +53,7 @@ Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el t
 
 `ctrl+b c` y el `+` de la barra abren la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
 
-El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created` desde la interfaz, y `adopt` espera el prompt, hace `Set-Location` a la carpeta y arranca el agente en ese mismo panel. Las pestañas creadas por la API (las de `tab`, `open` o cualquier script) se dejan como están. `doctor` avisa si el plugin no está enlazado.
+El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created`; `adopt` toma sólo las pestañas con la etiqueta numérica de Herdr (las del `+`), espera el prompt, hace `Set-Location` a la carpeta y arranca el agente en ese mismo panel. Las que ya traen nombre (las de `tab`, `open`, o `shell`) se dejan como están, y mientras `open` arma un espacio la adopción queda en pausa. `doctor` avisa si el plugin no está enlazado.
 
 ## projects.json
 

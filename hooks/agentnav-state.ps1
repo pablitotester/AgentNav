@@ -100,14 +100,26 @@ function Elapsed-Seconds([string]$path) {
     try { if ([IO.File]::Exists($path)) { return [int]([DateTime]::Now - [IO.File]::GetLastWriteTime($path)).TotalSeconds } } catch { }
     return -1
 }
+function With-JournalLock([scriptblock]$body) {
+    # Varios hooks pueden escribir a la vez (dos paneles, prompt + stop). FileMode.Append NO es atómico entre procesos
+    # en .NET Framework: cada handle escribe en su propio puntero y se pisan (medido: 4 procesos × 400 líneas, 28 %
+    # perdidas). Mutex con nombre, ~0,1 ms; si no se consigue en 500 ms se escribe igual.
+    $mx = $null
+    try {
+        $mx = New-Object Threading.Mutex($false, "Local\AgentNavJournal")
+        [void]$mx.WaitOne(500)
+        & $body
+    } catch { } finally { if ($mx) { try { $mx.ReleaseMutex() } catch { }; $mx.Dispose() } }
+}
 function Append-Line([string]$path, [string]$line) {
-    # Varios hooks pueden escribir a la vez (dos paneles, prompt + stop): FileShare.ReadWrite y tres intentos.
-    for ($i = 0; $i -lt 3; $i++) {
-        try {
-            $fs = [IO.FileStream]::new($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
-            try { $b = $Utf8NoBom.GetBytes($line + "`r`n"); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }
-            return
-        } catch { Start-Sleep -Milliseconds 10 }
+    With-JournalLock {
+        for ($i = 0; $i -lt 3; $i++) {
+            try {
+                $fs = [IO.FileStream]::new($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+                try { $b = $Utf8NoBom.GetBytes($line + "`r`n"); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }
+                return
+            } catch { Start-Sleep -Milliseconds 10 }
+        }
     }
 }
 function Prune-Markers([int]$hours = 12) {
@@ -277,8 +289,10 @@ try {
     $line = "{0} {1} sid={2} action={3} state={4} msg=""{5}"" -> {6}{7}" -f [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"), $env:HERDR_PANE_ID, $sidShort, $Action, $state, $message, $result, $extra
     Append-Line $logPath $line
     if ([IO.File]::Exists($logPath) -and (New-Object IO.FileInfo($logPath)).Length -gt 100KB) {
-        $lines = [IO.File]::ReadAllLines($logPath, [Text.Encoding]::UTF8)
-        if ($lines.Length -gt 200) { [IO.File]::WriteAllLines($logPath, $lines[($lines.Length - 200)..($lines.Length - 1)], $Utf8NoBom) }
+        With-JournalLock {  # el recorte lee y reescribe: sin el lock se tragaba la línea que otro hook estaba agregando
+            $lines = [IO.File]::ReadAllLines($logPath, [Text.Encoding]::UTF8)
+            if ($lines.Length -gt 200) { [IO.File]::WriteAllLines($logPath, $lines[($lines.Length - 200)..($lines.Length - 1)], $Utf8NoBom) }
+        }
     }
 } catch { }
 exit 0

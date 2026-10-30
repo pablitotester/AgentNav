@@ -123,7 +123,10 @@ def ensure_server(say=print):
         return False
     say("levantando el servidor de Herdr…")
     try:
-        subprocess.Popen([herdr_bin(), "server"], cwd=USERPROFILE or HOME,
+        # Entorno limpio: si `agentnav up` lo corre un Claude (desde su Bash), el servidor heredaría CLAUDECODE,
+        # CLAUDE_CODE_SESSION_ID de una sesión muerta, CLAUDE_PID… y se los pasaría a cada panel y a cada Claude nuevo.
+        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "HERDR_"))}
+        subprocess.Popen([herdr_bin(), "server"], cwd=USERPROFILE or HOME, env=env,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
     except OSError as e:
@@ -251,15 +254,31 @@ def new_project_base():
     return "C:\\"
 
 
+def _check_project_name(name):
+    if re.search(r'[\\/:*?"<>|]', name):
+        raise AgentNavError(f"el nombre no puede llevar \\ / : * ? \" < > |  ({name})")
+    return name
+
+
+def _project_path(raw):
+    """Ruta para registrar, siempre absoluta. `C:x` (relativa a la unidad) y `..\\x` (relativa al cwd) se rechazan:
+    abspath las resolvía contra el directorio actual en silencio (`C:AgentNav` desde C:\\AgentNav dio C:\\AgentNav\\AgentNav)."""
+    p = raw.strip().strip('"')
+    drive, tail = os.path.splitdrive(p)
+    if drive and tail[:1] not in ("\\", "/"):
+        raise AgentNavError(f"ruta relativa a la unidad ({p}): escribila completa, {drive}\\{tail}")
+    if not drive or not os.path.isabs(p):
+        raise AgentNavError(f"la ruta tiene que ser completa, con unidad ({p})")
+    return os.path.normpath(p)
+
+
 def cmd_new(rest):
     """agentnav new <nombre> [ruta]: crea la carpeta, registra el proyecto y lo abre con su Claude."""
     parts = rest.split(None, 1)
     if not parts:
         raise AgentNavError("uso: agentnav new <nombre> [ruta]")
-    name = parts[0].strip()
-    if re.search(r'[\\/:*?"<>|]', name):
-        raise AgentNavError(f"el nombre no puede llevar \\ / : * ? \" < > |  ({name})")
-    path = os.path.abspath(parts[1].strip().strip('"')) if len(parts) > 1 else os.path.join(new_project_base(), name)
+    name = _check_project_name(parts[0].strip())
+    path = _project_path(parts[1]) if len(parts) > 1 else os.path.join(new_project_base(), name)
     projects = load_projects()
     taken = next((p for p in projects if _norm_path(p["path"]) == _norm_path(path)), None)
     if taken:
@@ -506,6 +525,52 @@ def _process_table(names):
     finally:
         k32.CloseHandle(snap)
     return out
+
+
+def _process_env_names(pid):
+    """Nombres de las variables de entorno de otro proceso (bloque leído del PEB; sólo Python de 64 bits).
+    Lo usa doctor para ver si el servidor de Herdr heredó CLAUDE* de un Claude. None si no se pudo leer."""
+    import ctypes
+    from ctypes import wintypes
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        return None
+    k32, ntdll = ctypes.windll.kernel32, ctypes.windll.ntdll
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    ntdll.NtQueryInformationProcess.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+    pbi = (ctypes.c_void_p * 6)()
+    h = k32.OpenProcess(0x0410, False, pid)
+    if not h:
+        return None
+    try:
+        def read(addr, size):
+            buf, got = ctypes.create_string_buffer(size), ctypes.c_size_t()
+            ok = k32.ReadProcessMemory(h, ctypes.c_void_p(addr), buf, size, ctypes.byref(got))
+            return buf.raw[:got.value] if ok and got.value else None
+        if ntdll.NtQueryInformationProcess(h, 0, pbi, ctypes.sizeof(pbi), ctypes.byref(wintypes.ULONG())) != 0 or not pbi[1]:
+            return None
+        raw = read(pbi[1] + 0x20, 8)  # PEB.ProcessParameters
+        if not raw:
+            return None
+        params = int.from_bytes(raw, "little")
+        env_ptr, env_size = read(params + 0x80, 8), read(params + 0x3F0, 8)  # Environment, EnvironmentSize
+        if not env_ptr or not env_size:
+            return None
+        env_ptr, env_size = int.from_bytes(env_ptr, "little"), int.from_bytes(env_size, "little")
+        if not env_ptr or not 0 < env_size <= 4 * 1024 * 1024:
+            return None
+        block = read(env_ptr, env_size)
+        if not block:
+            return None
+        names = []
+        for entry in block.decode("utf-16-le", "replace").split("\0"):
+            if entry and not entry.startswith("="):
+                names.append(entry.split("=", 1)[0])
+        return names
+    finally:
+        k32.CloseHandle(h)
 
 
 @functools.lru_cache(maxsize=1)
@@ -1178,7 +1243,8 @@ def _adopt_run(wid, tid, pid, say, start_timeout_ms):
         raise AgentNavError(f"{tid}: el shell no llegó al prompt; la pestaña queda como está")
     if path:
         say(f"{ws.get('label') or wid}: {tid} → {path}")
-        code, out, err = run("pane", "run", pid, f"Set-Location -LiteralPath '{path}'", timeout=30)
+        # Comilla simple duplicada: dentro de '…' en PowerShell es la única forma de escapar (C:\it's\x rompía el parseo).
+        code, out, err = run("pane", "run", pid, "Set-Location -LiteralPath '" + path.replace("'", "''") + "'", timeout=30)
         if code != 0:
             raise AgentNavError(f"{tid}: no pude cambiar de carpeta ({(err or out)[:160]})")
         wait_prompt(pid, 5000)
@@ -1416,6 +1482,14 @@ def cmd_doctor():
                 check(None, f"el servidor de Herdr corre desde {server['cwd']} (retiene esa carpeta hasta que se reinicie)")
             else:
                 check(True, "servidor de Herdr arrancado desde tu carpeta de usuario")
+        if server:
+            names = _process_env_names(server["pid"])
+            leaked = sorted(n for n in (names or []) if n.upper().startswith("CLAUDE"))
+            if leaked:
+                check(False, "el servidor de Herdr heredó variables de un Claude (" + ", ".join(leaked[:4])
+                      + ("…" if len(leaked) > 4 else "") + ") y se las pasa a cada panel: herdr server stop, después agentnav up")
+            elif names is not None:
+                check(True, "servidor de Herdr con entorno limpio (sin CLAUDE*)")
         for p in projects:
             if any(a["kind"] == "claude" and a.get("continue") for a in p["agents"]) and claudes_outside_herdr(p["path"]):
                 check(None, f"  {p['name']}: hay un Claude corriendo en esa carpeta fuera de Herdr; 'continue' no lo va a pisar, arranca uno nuevo")
@@ -1570,16 +1644,18 @@ def cmd_pick():
             projects, snap, msg = load_projects(), None, ""
         elif k == "a":
             print()
-            name = _ask("  nombre: ")
-            path = _ask("  ruta:   ").strip('"')
-            if name and os.path.isdir(path):
-                try:
-                    add_project(name, os.path.abspath(path))
-                    projects, sel, snap, msg = load_projects(), len(projects), None, f"agregado {name}"
-                except AgentNavError as e:
-                    msg = str(e)
-            else:
-                msg = "no agregado: falta el nombre o la ruta no existe"
+            name = _ask("  nombre: ").strip()
+            path = _ask("  ruta:   ")
+            try:
+                if not name:
+                    raise AgentNavError("no agregado: falta el nombre")
+                path = _project_path(path)
+                if not os.path.isdir(path):
+                    raise AgentNavError(f"no agregado: la ruta no existe ({path})")
+                add_project(_check_project_name(name), path)
+                projects, sel, snap, msg = load_projects(), len(projects), None, f"agregado {name}"
+            except AgentNavError as e:
+                msg = str(e)
         elif k == "enter" and items:
             kind, r = items[sel]
             print()

@@ -178,7 +178,8 @@ def _norm_agent(raw, p_kind, p_args, p_continue, fallback_name):
     name = str(raw.get("name") or fallback_name)
     kind = str(raw.get("kind") or p_kind)
     a = {"name": name, "kind": kind,
-         "args": _as_list(raw.get("args")) or list(p_args),
+         # "args": [] en el agente anula los del proyecto; sin la clave, hereda.
+         "args": _as_list(raw["args"]) if "args" in raw else list(p_args),
          "continue": bool(raw.get("continue", p_continue)) if kind != SHELL_KIND else False,
          "command": str(raw.get("command") or "") if kind == SHELL_KIND else "",
          "split": str(raw.get("split") or "") or None,
@@ -200,7 +201,8 @@ def load_projects():
         p_kind = str(p.get("kind") or "claude")
         p_args = _as_list(p.get("args"))
         p_cont = bool(p.get("continue", False))
-        raw_agents = p.get("agents") or [str(p["name"])]
+        raw_agents = p.get("agents")
+        raw_agents = (raw_agents if isinstance(raw_agents, list) else _as_list(raw_agents)) or [str(p["name"])]
         agents = [a for a in (_norm_agent(r, p_kind, p_args, p_cont, str(p["name"])) for r in raw_agents) if a]
         out.append({"name": str(p["name"]), "path": str(p["path"]), "agents": agents,
                     "kind": p_kind, "continue": p_cont})
@@ -260,13 +262,24 @@ def _norm_path(p):
 
 # ---------------------------------------------------------------- Claude Code: conversaciones previas, recientes
 
-def claude_project_dir(path):
-    """Carpeta de Claude Code para un cwd: todo lo que no es letra o dígito se vuelve '-'."""
-    return os.path.join(CLAUDE_PROJECTS, re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(path)))
+def claude_project_key(path):
+    """Nombre de la carpeta de Claude Code para un cwd: todo lo que no es letra o dígito se vuelve '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(path))
+
+
+@functools.lru_cache(maxsize=1)
+def _claude_project_dirs():
+    try:
+        return {n.lower(): os.path.join(CLAUDE_PROJECTS, n) for n in os.listdir(CLAUDE_PROJECTS)}
+    except OSError:
+        return {}
 
 
 def has_conversation(path):
-    d = claude_project_dir(path)
+    """Claude guardó alguna conversación para esa carpeta (sin distinguir mayúsculas: el cwd real puede variar)."""
+    d = _claude_project_dirs().get(claude_project_key(path).lower())
+    if not d:
+        return False
     try:
         return any(n.endswith(".jsonl") for n in os.listdir(d))
     except OSError:
@@ -281,29 +294,33 @@ def _cwd_from_dir(d):
         return None, 0
     if not files:
         return None, 0
-    newest = max(files, key=lambda f: os.path.getmtime(f))
+    files.sort(key=lambda f: -os.path.getmtime(f))
     cwd = None
-    try:
-        with open(newest, encoding="utf-8", errors="replace") as f:
-            for _ in range(60):
-                line = f.readline()
-                if not line:
-                    break
-                m = re.search(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', line)
-                if m:
-                    try:
-                        cwd = json.loads('"' + m.group(1) + '"')
-                    except json.JSONDecodeError:
-                        cwd = None
-                    if cwd:
+    for path in files[:3]:  # una sesión muerta al nacer puede no traer cwd: probar las anteriores
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for _ in range(60):
+                    line = f.readline()
+                    if not line:
                         break
-    except OSError:
-        pass
+                    m = re.search(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', line)
+                    if m:
+                        try:
+                            cwd = json.loads('"' + m.group(1) + '"')
+                        except json.JSONDecodeError:
+                            cwd = None
+                        if cwd:
+                            break
+        except OSError:
+            pass
+        if cwd:
+            break
     if not cwd:
+        # Decode de respaldo: ambiguo si la ruta tenía guiones; el que llama descarta lo que no exista.
         base = os.path.basename(d)
         if re.match(r"^[A-Za-z]--", base):
             cwd = base[0] + ":\\" + base[3:].replace("-", "\\")
-    return cwd, os.path.getmtime(newest)
+    return cwd, os.path.getmtime(files[0])
 
 
 def recent_projects(projects, limit=8):
@@ -335,25 +352,34 @@ def recent_projects(projects, limit=8):
 
 def git_info(path, timeout=4):
     """(rama, cambios pendientes) o None si no es un repo o git no contesta a tiempo."""
-    if not os.path.isdir(os.path.join(path, ".git")):
+    # ".git" es carpeta en un clon y archivo en un worktree.
+    if not os.path.exists(os.path.join(path, ".git")):
         return None
     git = shutil.which("git")
     if not git:
         return None
     try:
-        b = subprocess.run([git, "-C", path, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
-        branch = b.stdout.strip() or "HEAD suelto"
-        s = subprocess.run([git, "-C", path, "status", "--porcelain", "-uno"], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
-        dirty = len([l for l in s.stdout.splitlines() if l.strip()]) if s.returncode == 0 else None
-        return branch, dirty
+        # Un solo proceso: rama + cambios. --no-optional-locks no toma index.lock y no pisa a un git ajeno.
+        s = subprocess.run([git, "--no-optional-locks", "-C", path, "status", "--porcelain=v2", "--branch", "-uno"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                           creationflags=CREATE_NO_WINDOW)
     except (subprocess.TimeoutExpired, OSError):
         return ("…", None)
+    if s.returncode != 0:
+        return None
+    branch, dirty = "HEAD suelto", 0
+    for line in s.stdout.splitlines():
+        if line.startswith("# branch.head "):
+            head = line[14:].strip()
+            if head != "(detached)":
+                branch = head
+        elif line[:1] in ("1", "2", "u"):
+            dirty += 1
+    return branch, dirty
 
 
-def git_info_all(projects, wait=2.0):
-    """Lanza git por proyecto en hilos y devuelve un dict que se va llenando (los que tardan aparecen después)."""
+def git_info_start(projects):
+    """Lanza git por proyecto en hilos. Devuelve (dict que se va llenando, lista de hilos)."""
     import threading
     out = {}
 
@@ -363,9 +389,18 @@ def git_info_all(projects, wait=2.0):
     threads = [threading.Thread(target=one, args=(p,), daemon=True) for p in projects]
     for t in threads:
         t.start()
+    return out, threads
+
+
+def git_wait(threads, wait):
     deadline = time.monotonic() + wait
     for t in threads:
         t.join(max(0.0, deadline - time.monotonic()))
+
+
+def git_info_all(projects, wait=2.0):
+    out, threads = git_info_start(projects)
+    git_wait(threads, wait)
     return out
 
 
@@ -401,6 +436,28 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say):
         else:
             say(f"  {a['name']}: no arrancó ({e})")
         return False
+
+
+PROMPT_RE = r"(PS [^\n]*> ?|\$ ?)$"  # prompt de pwsh / Windows PowerShell, o de un shell tipo bash
+
+
+def wait_prompt(pane, timeout_ms):
+    """Espera a que el panel muestre un prompt de shell. Devuelve False si venció el plazo (y se sigue igual)."""
+    code, _, _ = run("pane", "wait-output", pane, "--regex", PROMPT_RE, "--source", "visible",
+                     "--timeout", str(timeout_ms), timeout=timeout_ms / 1000 + 5)
+    return code == 0
+
+
+def find_ws(snap, name):
+    """El primer espacio cuya etiqueta coincide con el nombre del proyecto (una sola regla para todos los comandos)."""
+    low = name.lower()
+    return next((w for w in snap["workspaces"] if ws_label(w) == low), None)
+
+
+def _agent_present(live, base, kind):
+    """Un agente pedido ya está si en el espacio vive uno del mismo tipo llamado base o base-N (sufijo por colisión)."""
+    pat = re.compile(r"^" + re.escape(agent_name(base, set())) + r"(-\d+)?$")
+    return any(a.get("agent") == kind and pat.match(a.get("name") or "") for a in live)
 
 
 def _start_shell(a, pane, say):
@@ -451,7 +508,8 @@ def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms
             else:
                 pane = _new_pane(a, wid, p["path"], prev_pane, a["name"])
             if a["kind"] == SHELL_KIND:
-                time.sleep(0.4)  # el shell del panel nuevo tiene que llegar al prompt antes del comando
+                if a["command"]:
+                    wait_prompt(pane, 10000)  # pwsh en frío tarda hasta ~3 s en llegar al prompt
                 all_ok &= _start_shell(a, pane, say)
             else:
                 all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say)
@@ -470,13 +528,13 @@ def open_project(p, say=print, start_timeout_ms=90000):
     taken = {a.get("name") for a in snap["agents"] if a.get("name")}
     wanted = p["agents"]
 
-    ws = next((w for w in snap["workspaces"] if ws_label(w) == p["name"].lower()), None)
+    ws = find_ws(snap, p["name"])
     if ws:
         wid = ws["workspace_id"]
         api("workspace", "focus", wid)
-        live = {a.get("name") for a in snap["agents"] if a.get("workspace_id") == wid}
+        live = [a for a in snap["agents"] if a.get("workspace_id") == wid]
         # Sólo se reponen agentes que Herdr conoce; los paneles de shell no se distinguen de uno abierto a mano.
-        missing = [a for a in wanted if a["kind"] != SHELL_KIND and agent_name(a["name"], set()) not in live]
+        missing = [a for a in wanted if a["kind"] != SHELL_KIND and not _agent_present(live, a["name"], a["kind"])]
         if not missing:
             say(f"{p['name']}: ya estaba abierto, enfocado.")
             return "focused", True
@@ -493,29 +551,31 @@ def open_project(p, say=print, start_timeout_ms=90000):
     return "created", ok
 
 
-def close_project(p, say=print, grace=5.0):
-    """Cierra el espacio del proyecto. A los Claude les manda /exit primero para que disparen SessionEnd."""
+def close_project(p, say=print, grace_ms=5000):
+    """Cierra el espacio del proyecto. A los Claude que están en el prompt les manda /exit primero (dispara SessionEnd).
+    A uno bloqueado o todavía arrancando no se le manda nada: Enter ahí concedería el permiso o el diálogo de confianza."""
     snap = snapshot()
-    ws = next((w for w in snap["workspaces"] if ws_label(w) == p["name"].lower()), None)
+    ws = find_ws(snap, p["name"])
     if not ws:
         say(f"{p['name']}: no estaba abierto.")
         return False
     wid = ws["workspace_id"]
     claudes = [a for a in snap["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude" and a.get("pane_id")]
-    for a in claudes:
+    polite = [a for a in claudes if a.get("interactive_ready") and not a.get("launch_pending")
+              and a.get("agent_status") in ("idle", "done")]
+    for a in polite:
         try:
             api("pane", "send-text", a["pane_id"], "/exit")
             api("pane", "send-keys", a["pane_id"], "enter")
         except AgentNavError:
             pass
-    if claudes:
-        say(f"{p['name']}: saliendo de {len(claudes)} Claude…")
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline:
-            time.sleep(0.5)
-            alive = [a for a in snapshot()["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude"]
-            if not alive:
-                break
+    if polite:
+        say(f"{p['name']}: saliendo de {len(polite)} Claude…")
+        for a in polite:  # una espera bloqueante por panel en vez de sondear el snapshot
+            wait_prompt(a["pane_id"], grace_ms)
+    skipped = len(claudes) - len(polite)
+    if skipped:
+        say(f"{p['name']}: {skipped} Claude ocupado(s) o bloqueado(s) se cierran sin /exit.")
     api("workspace", "close", wid)
     say(f"{p['name']}: espacio {wid} cerrado.")
     return True
@@ -543,10 +603,9 @@ def paint(text, code):
 
 def describe(snap, projects):
     """Devuelve filas [(proyecto, ws_id|None, [agentes])] y los agentes sueltos."""
-    ws_by_label = {ws_label(ws): ws for ws in snap["workspaces"]}
     rows, used = [], set()
     for p in projects:
-        ws = ws_by_label.get(p["name"].lower())
+        ws = find_ws(snap, p["name"])
         agents = []
         if ws:
             used.add(ws["workspace_id"])
@@ -563,15 +622,26 @@ def agent_line(a):
     return paint(STATUS_GLYPH.get(st, "?"), STATUS_COLOR.get(st, "0")) + f" {label} {st}" + (f"  {title[:50]}" if title else "")
 
 
+def _snapshot_or_none():
+    """Snapshot, o None si el servidor no corre (un solo spawn en vez de 'status server' + snapshot)."""
+    try:
+        return snapshot()
+    except AgentNavError:
+        if server_running():
+            raise
+        return None
+
+
 def cmd_list():
     projects = load_projects()
-    gits = git_info_all(projects)
-    if not server_running():
+    gits, threads = git_info_start(projects)  # git corre mientras hablamos con Herdr
+    snap = _snapshot_or_none()
+    git_wait(threads, 2.0)
+    if snap is None:
         print("servidor de Herdr: no corre (agentnav up)")
         for p in projects:
             print(f"  {p['name']:<14} {git_text(gits.get(p['name'])):<18} {p['path']}")
         return 0
-    snap = snapshot()
     rows, loose = describe(snap, projects)
     for p, wid, agents in rows:
         state = f"abierto {wid}" if wid else "cerrado"
@@ -601,9 +671,10 @@ def cmd_open(name):
 
 
 def cmd_close(name):
-    if not server_running():
+    p = _project_or_die(name)
+    if _snapshot_or_none() is None:
         raise AgentNavError("el servidor de Herdr no corre")
-    close_project(_project_or_die(name))
+    close_project(p)
     return 0
 
 
@@ -686,15 +757,21 @@ def cmd_hoy(arg):
     for name, evs in groups.items():
         prompts = [e for e in evs if e["event"] == "prompt"]
         blocked = [e for e in evs if e["event"] == "blocked"]
+        # El hook escribe en el "stop" los segundos medidos desde el prompt (sobrevive a Esc + nuevo pedido y a la
+        # medianoche); el reloj del diario es sólo el respaldo para hooks viejos.
         active, open_at = 0, {}
         for e in evs:
             t = _secs(e["time"])
-            if t is None:
-                continue
             if e["event"] == "prompt":
-                open_at[e["sid"]] = t
-            elif e["event"] in ("stop", "end") and e["sid"] in open_at:
-                active += max(0, t - open_at.pop(e["sid"]))
+                if t is not None:
+                    open_at[e["sid"]] = t
+            elif e["event"] in ("stop", "end"):
+                started = open_at.pop(e["sid"], None)
+                measured = int(e["text"]) if re.match(r"^\d+$", e["text"] or "") else -1
+                if measured >= 0:
+                    active += measured
+                elif started is not None and t is not None:
+                    active += max(0, t - started)
         sessions = len({e["sid"] for e in evs if e["sid"]})
         head = f"{name}: {len(prompts)} pedidos, {sessions} sesión(es), ~{_fmt_dur(active)} trabajando"
         if blocked:
@@ -702,7 +779,9 @@ def cmd_hoy(arg):
         print()
         print(paint(head, "1"))
         for e in prompts:
-            print(f"  {e['time'][:5]}  {e['text'][:110]}")
+            # Un prompt puede traer escapes ANSI o controles: nunca se imprimen crudos en la consola.
+            text = re.sub(r"[\x00-\x1f\x7f]", " ", e["text"])
+            print(f"  {e['time'][:5]}  {text[:110]}")
     return 0
 
 
@@ -875,6 +954,16 @@ def _getkey():
     return ch.lower()
 
 
+def _getkey_or_change(changed):
+    """Como _getkey, pero devuelve None (sin tecla) en cuanto changed() es verdadero, para repintar."""
+    import msvcrt
+    while not msvcrt.kbhit():
+        if changed():
+            return None
+        time.sleep(0.05)
+    return _getkey()
+
+
 def _ask(prompt):
     try:
         return input(prompt).strip()
@@ -888,11 +977,11 @@ def cmd_pick():
     snap, gits, recents = None, {}, []
     while True:
         if snap is None:
+            gits, _ = git_info_start(projects)  # se pinta ya; la columna de git aparece cuando llega
             try:
                 snap = snapshot()
             except AgentNavError as e:
                 snap, msg = {"workspaces": [], "agents": []}, str(e)
-            gits = git_info_all(projects, wait=1.5)
             recents = recent_projects(projects)
         rows, loose = describe(snap, projects)
         items = [("project", r) for r in rows] + [("recent", r) for r in recents]
@@ -927,7 +1016,10 @@ def cmd_pick():
         print(paint("  ↑↓ mover · Enter abrir o ir · a agregar · r refrescar · q salir", "2"))
         if msg:
             print("  " + msg)
-        k = _getkey()
+        painted = len(gits)
+        k = _getkey_or_change(lambda: len(gits) != painted)
+        if k is None:
+            continue  # llegó un resultado de git: repintar
         if k in ("q", "esc"):
             return 0
         if k in ("up", "k"):

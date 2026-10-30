@@ -72,11 +72,23 @@ Los paneles `shell` no se reponen al reabrir un proyecto ya abierto (no se disti
 ## settings.json
 
 ```json
-{ "ntfy": { "topic": "", "server": "https://ntfy.sh", "min_seconds": 120 } }
+{ "ntfy": { "topic": "", "server": "https://ntfy.sh", "min_seconds": 120, "min_seconds_blocked": 0 } }
 ```
 
-Con `topic` vacío no hay avisos. Con topic, el hook publica cuando un turno termina o pide permiso y llevaba al menos
-`min_seconds`. En el teléfono: app ntfy, suscribirse al mismo topic. El topic es público: elegí uno largo y raro.
+Con `topic` vacío no hay avisos. Con topic, el hook publica cuando un turno termina y llevaba al menos `min_seconds`,
+y cuando pide permiso y llevaba al menos `min_seconds_blocked` (0: siempre, porque el permiso suele pedirse a los
+pocos segundos). En el teléfono: app ntfy, suscribirse al mismo topic. **El topic de ntfy.sh es público y adivinable**:
+viaja el nombre de la carpeta y los primeros 160 caracteres del pedido. Elegí un nombre largo y al azar, o usá un
+servidor propio.
+
+## Límites conocidos del estado
+
+- `Stop` no dispara si interrumpís con Esc: queda working hasta el `idle_prompt` (~1 min) o el siguiente pedido.
+- Denegar un permiso no genera `PostToolUse`: queda blocked hasta que termine ese turno.
+- Claude manda la notificación de permiso recién cuando el pedido lleva un rato esperando; Herdr lo detecta por
+  pantalla antes, así que el panel se pone en rojo igual.
+- El hook de desbloqueo sólo lanza PowerShell si existe la marca de **esa** sesión (`CLAUDE_CODE_SESSION_ID`);
+  cuesta ~60 ms por herramienta en el resto de los casos.
 
 ## Requisitos
 

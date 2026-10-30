@@ -8,8 +8,10 @@ Uso:
   agentnav new <nombre> [ruta]
                            crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre
   agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
-  agentnav tab             pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente
-                           (es lo que corre ctrl+b c; la pestaña pelada de Herdr queda en ctrl+b shift+c)
+  agentnav tab [shell]     pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente
+                           (es lo que corre ctrl+b c). Con "shell": pestaña pelada en C:\\ (ctrl+b shift+c)
+  agentnav adopt           lo corre el plugin de Herdr al crearse una pestaña desde la interfaz (el "+" de la barra):
+                           la lleva a la carpeta del proyecto y arranca el mismo agente, como `tab`
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
@@ -1033,31 +1035,104 @@ def _tab_agent(snap, wid, pane, project):
     return None
 
 
-def cmd_tab(say=print, start_timeout_ms=90000):
-    """agentnav tab: pestaña nueva en el espacio actual, en la carpeta del panel de origen y con el mismo agente.
-    Un Claude nuevo arranca una conversación nueva (nunca --continue: la viva ya está en la otra pestaña)."""
-    try:
-        snap = snapshot()
-        wid, ws, pane, project = _tab_source(snap, load_projects())
-        path = pane.get("cwd") or ""
-        if not os.path.isdir(path):
-            path = project["path"] if project and os.path.isdir(project["path"]) else new_project_base()
-        a = _tab_agent(snap, wid, pane, project)
-        taken = {x.get("name") for x in snap["agents"] if x.get("name")}
-        label = agent_name(a["name"], taken) if a else os.path.basename(path.rstrip("\\/")) or "shell"
-        say(f"{ws.get('label') or wid}: pestaña {label} en {path}")
-        t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--focus")
-        if a is None:
-            return 0
-        a = dict(a, name=label)
-        return 0 if _start_herdr_agent(a, path, t["root_pane"]["pane_id"], start_timeout_ms, say, set(), True) else 1
-    except AgentNavError as e:
-        # Desde la tecla nadie ve la consola: el error va como aviso de Herdr.
+def _notify_error(fn):
+    """Desde una tecla o un gancho nadie ve la consola: un error de AgentNav sale como aviso de Herdr."""
+    def wrapped(*args, **kw):
         try:
-            run("notification", "show", "AgentNav", "--body", str(e)[:200], "--sound", "none", timeout=5)
-        except AgentNavError:
-            pass
-        raise
+            return fn(*args, **kw)
+        except AgentNavError as e:
+            try:
+                run("notification", "show", "AgentNav", "--body", str(e)[:200], "--sound", "none", timeout=5)
+            except AgentNavError:
+                pass
+            raise
+    return wrapped
+
+
+@_notify_error
+def cmd_tab(mode="", say=print, start_timeout_ms=90000):
+    """agentnav tab: pestaña nueva en el espacio actual, en la carpeta del panel de origen y con el mismo agente.
+    Un Claude nuevo arranca una conversación nueva (nunca --continue: la viva ya está en la otra pestaña).
+    `tab shell`: la pestaña pelada de siempre (shell en C:\\), creada por la API para que el plugin no la adopte."""
+    snap = snapshot()
+    wid, ws, pane, project = _tab_source(snap, load_projects())
+    if mode == "shell":
+        path = new_project_base()
+        say(f"{ws.get('label') or wid}: pestaña de shell en {path}")
+        api("tab", "create", "--workspace", wid, "--cwd", path, "--focus")
+        return 0
+    path = pane.get("cwd") or ""
+    if not os.path.isdir(path):
+        path = project["path"] if project and os.path.isdir(project["path"]) else new_project_base()
+    a = _tab_agent(snap, wid, pane, project)
+    taken = {x.get("name") for x in snap["agents"] if x.get("name")}
+    label = agent_name(a["name"], taken) if a else os.path.basename(path.rstrip("\\/")) or "shell"
+    say(f"{ws.get('label') or wid}: pestaña {label} en {path}")
+    t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--focus")
+    if a is None:
+        return 0
+    a = dict(a, name=label)
+    return 0 if _start_herdr_agent(a, path, t["root_pane"]["pane_id"], start_timeout_ms, say, set(), True) else 1
+
+
+def cmd_adopt(argv, say=print, start_timeout_ms=90000):
+    """Gancho `tab.created` del plugin (C:\\AgentNav\\plugin). Herdr lo llama con HERDR_WORKSPACE_ID, HERDR_TAB_ID,
+    HERDR_PANE_ID y HERDR_PLUGIN_CONTEXT_JSON. Sólo adopta pestañas abiertas desde la interfaz (el "+" o la tecla de
+    Herdr): las que llegan por la API ya vienen armadas (las crea `tab`, `open`, o cualquier otro script).
+    El gancho vuelve enseguida: el trabajo (esperar el prompt, cd, arrancar el Claude) sigue en un hijo suelto."""
+    ctx = {}
+    try:
+        ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+    except ValueError:
+        pass
+    wid, tid, pid = (os.environ.get(k) for k in ("HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"))
+    if not (wid and tid and pid):
+        say("adopt: faltan HERDR_WORKSPACE_ID / HERDR_TAB_ID / HERDR_PANE_ID; no hago nada.")
+        return 0
+    if ctx.get("invocation_source") == "api":
+        say(f"adopt: {tid} vino por la API; la dejo como está.")
+        return 0
+    if "--run" not in argv:
+        subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "adopt", "--run"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+        say(f"adopt: {tid} ({ctx.get('invocation_source') or '?'}) se arma en segundo plano.")
+        return 0
+    return _adopt_run(wid, tid, pid, say, start_timeout_ms)
+
+
+@_notify_error
+def _adopt_run(wid, tid, pid, say, start_timeout_ms):
+    snap = snapshot()
+    ws = next((w for w in snap["workspaces"] if w.get("workspace_id") == wid), None)
+    if not ws or not any(x.get("pane_id") == pid for x in snap.get("panes", [])):
+        return 0  # la cerraron antes de que llegáramos
+    project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
+    a = _tab_agent(snap, wid, {}, project)  # sin panel de origen: el último agente vivo del espacio, o el registrado
+    live = [x for x in snap["agents"] if x.get("workspace_id") == wid and x.get("pane_id") != pid]
+    src = max(live, key=lambda x: x.get("state_change_seq") or 0) if live else None
+    others = [x for x in snap.get("panes", []) if x.get("workspace_id") == wid and x.get("pane_id") != pid]
+    path = next((c for c in ((project or {}).get("path"), (src or {}).get("cwd"), *(x.get("cwd") for x in others))
+                 if c and os.path.isdir(c)), None)
+    if not path and not a:
+        return 0  # nada que saber del espacio: queda la pestaña tal como la abrió Herdr
+    if not wait_prompt(pid, 15000):
+        raise AgentNavError(f"{tid}: el shell no llegó al prompt; la pestaña queda como está")
+    if path:
+        say(f"{ws.get('label') or wid}: {tid} → {path}")
+        code, out, err = run("pane", "run", pid, f"Set-Location -LiteralPath '{path}'", timeout=30)
+        if code != 0:
+            raise AgentNavError(f"{tid}: no pude cambiar de carpeta ({(err or out)[:160]})")
+        wait_prompt(pid, 5000)
+    if not a:
+        return 0
+    taken = {x.get("name") for x in snap["agents"] if x.get("name")}
+    label = agent_name(a["name"], taken)
+    try:
+        api("tab", "rename", tid, label)
+    except AgentNavError:
+        pass
+    return 0 if _start_herdr_agent(dict(a, name=label), path or new_project_base(), pid, start_timeout_ms, say, set(), True) else 1
 
 
 def cmd_recent():
@@ -1224,12 +1299,23 @@ def cmd_doctor():
         with open(cfg_path, encoding="utf-8") as f:
             cfg = f.read()
         check("agentnav.py pick" in cfg, "config.toml: popup del selector (prefix+alt+p)")
-        check("agentnav.py tab" in cfg and 'new_tab = "prefix+shift+c"' in cfg,
+        check("agentnav.py tab\"" in cfg and 'new_tab = ""' in cfg,
               "config.toml: ctrl+b c abre la pestaña de AgentNav (misma carpeta, mismo agente)")
+        check("agentnav.py tab shell" in cfg, "config.toml: ctrl+b shift+c abre la pestaña pelada por la API")
         check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
         check("[session]" in cfg and "resume_agents_on_restore = true" in cfg, "config.toml: agentes se reanudan al restaurar")
     except OSError:
         check(False, f"no encuentro {cfg_path}")
+    # Plugin de Herdr (gancho tab.created → agentnav adopt)
+    try:
+        plugins = api("plugin", "list", "--json").get("plugins") or []
+        mine = next((x for x in plugins if x.get("plugin_id") == "agentnav"), None)
+        if mine and mine.get("enabled"):
+            check(True, 'plugin de Herdr "agentnav" enlazado: el "+" de la barra abre la pestaña en el proyecto con su agente')
+        else:
+            check(False, "plugin de Herdr sin enlazar o apagado: herdr plugin link C:\\AgentNav\\plugin")
+    except AgentNavError as e:
+        check(False, f"plugin de Herdr: {e}")
     # Hooks de Claude Code
     hook = os.path.join(CLAUDE_HOME, "hooks", "agentnav-state.ps1")
     unblock = os.path.join(CLAUDE_HOME, "hooks", "agentnav-unblock.cmd")
@@ -1484,7 +1570,9 @@ def main(argv):
     if cmd == "pick":
         return cmd_pick()
     if cmd in ("tab", "pestaña", "pestana"):
-        return cmd_tab()
+        return cmd_tab(rest.strip().lower())
+    if cmd == "adopt":
+        return cmd_adopt(argv[1:])
     if cmd in ("recent", "recientes"):
         return cmd_recent()
     if cmd in ("hoy", "today", "diario"):

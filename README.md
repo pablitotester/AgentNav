@@ -26,6 +26,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 | Arranque automático | carpeta Inicio de Windows, `Herdr server.vbs` | `startup/Herdr server.vbs` |
 | Alias `agentnav` | perfiles de pwsh y de Windows PowerShell | una línea: `Set-Alias agentnav C:\AgentNav\agentnav.ps1` |
 | Herdr como app | `Herdr.lnk` en el escritorio → `wscript C:\AgentNav\Herdr.vbs` (sin consola) → `agentnav app` | `Herdr.vbs` |
+| Plugin de Herdr | `herdr plugin link C:\AgentNav\plugin` (gancho `tab.created` → `agentnav adopt`) | `plugin\herdr-plugin.toml` |
 | Estado del hook | `%LOCALAPPDATA%\AgentNav\` (hook.log, journal\, working\, blocked\, blocked.flag) | no |
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
@@ -38,7 +39,8 @@ agentnav list                proyectos, cuáles están abiertos, rama y cambios,
 agentnav open <nombre>       abre el proyecto como espacio con sus agentes, o lo enfoca y repone los que falten
 agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su Claude
 agentnav close <nombre>      cierra el espacio; a los Claude les manda /exit antes
-agentnav tab                 pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente (ctrl+b c)
+agentnav tab [shell]         pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente (ctrl+b c); con shell, la pelada (ctrl+b shift+c)
+agentnav adopt               lo corre el plugin de Herdr cuando el "+" de la barra crea una pestaña: la lleva al proyecto y arranca el agente
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
@@ -49,7 +51,9 @@ agentnav app                 lo que corre el acceso directo: servidor arriba, ve
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
 
-`ctrl+b c` abre la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada de Herdr (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
+`ctrl+b c` y el `+` de la barra abren la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
+
+El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created` desde la interfaz, y `adopt` espera el prompt, hace `Set-Location` a la carpeta y arranca el agente en ese mismo panel. Las pestañas creadas por la API (las de `tab`, `open` o cualquier script) se dejan como están. `doctor` avisa si el plugin no está enlazado.
 
 ## projects.json
 

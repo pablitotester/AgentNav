@@ -10,8 +10,8 @@ Uso:
   agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
   agentnav tab [shell]     pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente
                            (es lo que corre ctrl+b c). Con "shell": pestaña pelada en C:\\ (ctrl+b shift+c)
-  agentnav adopt           lo corre el plugin de Herdr al crearse una pestaña desde la interfaz (el "+" de la barra):
-                           la lleva a la carpeta del proyecto y arranca el mismo agente, como `tab`
+  agentnav adopt           lo corre el plugin de Herdr cuando nace una pestaña (el "+" de la barra) o un panel (split):
+                           lo lleva a la carpeta del proyecto y arranca el mismo agente, como `tab`
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
@@ -1190,73 +1190,89 @@ def _tab_path(cwd, project):
 
 
 def cmd_adopt(argv, say=print, start_timeout_ms=90000):
-    """Gancho `tab.created` del plugin (C:\\AgentNav\\plugin). Herdr lo llama con HERDR_WORKSPACE_ID, HERDR_TAB_ID,
-    HERDR_PANE_ID y HERDR_PLUGIN_CONTEXT_JSON. El "+" de la barra entra por la misma API que los scripts
-    (invocation_source = api en los dos casos), así que lo que distingue una pestaña pelada de Herdr es su etiqueta:
-    un número ("2", "3"…). Las que crea AgentNav llevan nombre (el del agente, o "shell"), y mientras `open` arma un
-    espacio hay una pausa para no pisar el panel donde está arrancando el agente.
+    """Ganchos `tab.created` y `pane.created` del plugin (C:\\AgentNav\\plugin). Herdr los llama con HERDR_WORKSPACE_ID,
+    HERDR_TAB_ID, HERDR_PANE_ID, HERDR_PLUGIN_EVENT y HERDR_PLUGIN_CONTEXT_JSON. El "+" de la barra y el split entran
+    por la misma API que los scripts (invocation_source = api en todos los casos), así que lo que distingue algo pelado
+    de Herdr es: en una pestaña, la etiqueta numérica ("2", "3"…; las de AgentNav llevan nombre); en un panel, que nazca
+    en el new_cwd fijo de la config (C:\\) y no en una carpeta pedida con --cwd. Mientras `open` arma un espacio hay una
+    pausa para no pisar el panel donde está arrancando el agente.
     El gancho vuelve enseguida: el trabajo (esperar el prompt, cd, arrancar el Claude) sigue en un hijo suelto."""
-    ctx = {}
+    ctx, ev = {}, {}
     try:
         ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+        ev = (json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}").get("data") or {})
     except ValueError:
         pass
+    event = os.environ.get("HERDR_PLUGIN_EVENT") or ""
     wid, tid, pid = (os.environ.get(k) for k in ("HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"))
     if not (wid and tid and pid):
         say("adopt: faltan HERDR_WORKSPACE_ID / HERDR_TAB_ID / HERDR_PANE_ID; no hago nada.")
         return 0
-    label = str(ctx.get("tab_label") or "")
-    if not re.fullmatch(r"\d+", label):
-        say(f"adopt: {tid} ya tiene nombre ({label!r}); la dejo como está.")
-        return 0
+    if event == "pane.created":
+        born = (ev.get("pane") or {}).get("cwd") or ""
+        base = new_project_base()
+        if born and os.path.isdir(born) and _norm_path(born) != _norm_path(base):
+            say(f"adopt: {pid} nació con carpeta propia ({born}); lo dejo como está.")
+            return 0
+    else:
+        label = str(ctx.get("tab_label") or "")
+        if not re.fullmatch(r"\d+", label):
+            say(f"adopt: {tid} ya tiene nombre ({label!r}); la dejo como está.")
+            return 0
     if adopt_is_paused():
-        say(f"adopt: {tid} nació mientras AgentNav arma un espacio; la dejo como está.")
+        say(f"adopt: {pid} nació mientras AgentNav arma un espacio; lo dejo como está.")
         return 0
     if "--run" not in argv:
         subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "adopt", "--run"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-        say(f"adopt: {tid} se arma en segundo plano.")
+        say(f"adopt: {pid} ({event}) se arma en segundo plano.")
         return 0
-    return _adopt_run(wid, tid, pid, say, start_timeout_ms)
+    return _adopt_run(event, wid, tid, pid, say, start_timeout_ms)
 
 
 @_notify_error
-def _adopt_run(wid, tid, pid, say, start_timeout_ms):
+def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
     snap = snapshot()
     ws = next((w for w in snap["workspaces"] if w.get("workspace_id") == wid), None)
-    mine = next((x for x in snap.get("panes", []) if x.get("pane_id") == pid), None)
+    panes = snap.get("panes", [])
+    mine = next((x for x in panes if x.get("pane_id") == pid), None)
     if not ws or not mine:
-        return 0  # la cerraron antes de que llegáramos
+        return 0  # lo cerraron antes de que llegáramos
     if mine.get("agent") or any(x.get("pane_id") == pid for x in snap["agents"]):
         return 0  # alguien ya arrancó algo ahí
-    project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
-    a = _tab_agent(snap, wid, {}, project)  # sin panel de origen: el último agente vivo del espacio, o el registrado
-    live = [x for x in snap["agents"] if x.get("workspace_id") == wid and x.get("pane_id") != pid]
+    in_tab = [x for x in panes if x.get("tab_id") == tid and x.get("pane_id") != pid]
+    if event == "pane.created" and not in_tab:
+        return 0  # el panel raíz de una pestaña nueva: de ése se ocupa el gancho tab.created
+    # De dónde copiar carpeta y agente: en un split, los hermanos de la misma pestaña; en una pestaña nueva, el resto
+    # del espacio. Primero el agente más reciente entre ellos, si no cualquier panel.
+    pool = in_tab if event == "pane.created" else [x for x in panes if x.get("workspace_id") == wid and x.get("pane_id") != pid]
+    ids = {x.get("pane_id") for x in pool}
+    live = [x for x in snap["agents"] if x.get("pane_id") in ids]
     src = max(live, key=lambda x: x.get("state_change_seq") or 0) if live else None
-    others = [x for x in snap.get("panes", []) if x.get("workspace_id") == wid and x.get("pane_id") != pid]
-    path = next((c for c in ((project or {}).get("path"), (src or {}).get("cwd"), *(x.get("cwd") for x in others))
-                 if c and os.path.isdir(c)), None)
-    if not path and not a:
-        return 0  # nada que saber del espacio: queda la pestaña tal como la abrió Herdr
+    hint = (src or {}).get("cwd") or next((x.get("cwd") for x in pool if x.get("cwd")), "")
+    project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
+    path = _tab_path(hint, project)
+    a = _tab_agent(snap, wid, {"pane_id": (src or {}).get("pane_id")}, project)
     if not wait_prompt(pid, 15000):
-        raise AgentNavError(f"{tid}: el shell no llegó al prompt; la pestaña queda como está")
-    if path:
-        say(f"{ws.get('label') or wid}: {tid} → {path}")
+        raise AgentNavError(f"{pid}: el shell no llegó al prompt; queda como está")
+    if _norm_path(mine.get("cwd") or "") != _norm_path(path):
+        say(f"{ws.get('label') or wid}: {pid} → {path}")
         # Comilla simple duplicada: dentro de '…' en PowerShell es la única forma de escapar (C:\it's\x rompía el parseo).
         code, out, err = run("pane", "run", pid, "Set-Location -LiteralPath '" + path.replace("'", "''") + "'", timeout=30)
         if code != 0:
-            raise AgentNavError(f"{tid}: no pude cambiar de carpeta ({(err or out)[:160]})")
+            raise AgentNavError(f"{pid}: no pude cambiar de carpeta ({(err or out)[:160]})")
         wait_prompt(pid, 5000)
     if not a:
         return 0
     taken = {x.get("name") for x in snap["agents"] if x.get("name")}
     label = agent_name(a["name"], taken)
-    try:
-        api("tab", "rename", tid, label)
-    except AgentNavError:
-        pass
-    return 0 if _start_herdr_agent(dict(a, name=label), path or new_project_base(), pid, start_timeout_ms, say, set(), True) else 1
+    if event != "pane.created":
+        try:
+            api("tab", "rename", tid, label)
+        except AgentNavError:
+            pass
+    return 0 if _start_herdr_agent(dict(a, name=label), path, pid, start_timeout_ms, say, set(), True) else 1
 
 
 def cmd_recent():
@@ -1435,7 +1451,10 @@ def cmd_doctor():
         plugins = api("plugin", "list", "--json").get("plugins") or []
         mine = next((x for x in plugins if x.get("plugin_id") == "agentnav"), None)
         if mine and mine.get("enabled"):
-            check(True, 'plugin de Herdr "agentnav" enlazado: el "+" de la barra abre la pestaña en el proyecto con su agente')
+            hooks = {e.get("on") for e in (mine.get("events") or [])}
+            check({"tab.created", "pane.created"} <= hooks,
+                  'plugin de Herdr "agentnav" enlazado: el "+" y el split abren en el proyecto con su agente' if {"tab.created", "pane.created"} <= hooks
+                  else f"plugin de Herdr enlazado pero con ganchos viejos ({', '.join(sorted(hooks))}): herdr plugin unlink agentnav; herdr plugin link C:\\AgentNav\\plugin")
         else:
             check(False, "plugin de Herdr sin enlazar o apagado: herdr plugin link C:\\AgentNav\\plugin")
     except AgentNavError as e:

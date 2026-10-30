@@ -1,7 +1,8 @@
 # Plugin local de AgentNav para Herdr (30/10). Enlazado con: herdr plugin link C:\AgentNav\plugin
-# Cada pestaña nueva pasa por `agentnav adopt`. Las que nacen con la etiqueta numérica de Herdr ("2", "3"…),
-# que son las del "+" de la barra, se llevan a la carpeta del proyecto y arrancan el mismo agente, igual que
-# ctrl+b c. Las que ya traen nombre (las de agentnav tab/open: el agente, o "shell") se dejan como están.
+# Cada pestaña y cada panel nuevos pasan por `agentnav adopt`. Las pestañas que nacen con la etiqueta numérica
+# de Herdr ("2", "3"…), que son las del "+" de la barra, y los paneles de split que nacen en el new_cwd fijo
+# (C:\) se llevan a la carpeta del proyecto y arrancan el mismo agente, igual que ctrl+b c. Lo que ya trae
+# nombre o carpeta propia (lo que crean agentnav tab/open u otro script con --cwd) se deja como está.
 id = "agentnav"
 name = "AgentNav"
 version = "0.1.0"
@@ -11,4 +12,8 @@ platforms = ["windows"]
 
 [[events]]
 on = "tab.created"
+command = ["py", "-I", "C:/AgentNav/agentnav.py", "adopt"]
+
+[[events]]
+on = "pane.created"
 command = ["py", "-I", "C:/AgentNav/agentnav.py", "adopt"]

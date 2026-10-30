@@ -167,7 +167,7 @@ function Notify-Phone([string]$kind, [string]$title, [string]$body, [int]$elapse
         $server = if ([string]::IsNullOrWhiteSpace($cfg.server)) { "https://ntfy.sh" } else { ([string]$cfg.server).TrimEnd("/") }
         [Net.ServicePointManager]::Expect100Continue = $false
         $req = [Net.HttpWebRequest]::Create("$server/$($cfg.topic)")
-        $req.Method = "POST"; $req.Proxy = $null; $req.Timeout = 3000; $req.ReadWriteTimeout = 3000
+        $req.Method = "POST"; $req.Proxy = $null; $req.Timeout = 2000; $req.ReadWriteTimeout = 2000
         $req.ContentType = "text/plain; charset=utf-8"
         $req.Headers.Add("Title", "=?UTF-8?B?" + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($title)) + "?=")
         $req.Headers.Add("Tags", "robot")

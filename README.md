@@ -26,7 +26,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 | Arranque automático | carpeta Inicio de Windows, `Herdr server.vbs` | `startup/Herdr server.vbs` |
 | Alias `agentnav` | perfiles de pwsh y de Windows PowerShell | una línea: `Set-Alias agentnav C:\AgentNav\agentnav.ps1` |
 | Herdr como app | `Herdr.lnk` en el escritorio → `wscript C:\AgentNav\Herdr.vbs` (sin consola) → `agentnav app` | `Herdr.vbs` |
-| Plugin de Herdr | `herdr plugin link C:\AgentNav\plugin` (gancho `tab.created` → `agentnav adopt`) | `plugin\herdr-plugin.toml` |
+| Plugin de Herdr | `herdr plugin link C:\AgentNav\plugin` (ganchos `tab.created` y `pane.created` → `agentnav adopt`) | `plugin\herdr-plugin.toml` |
 | Estado del hook | `%LOCALAPPDATA%\AgentNav\` (hook.log, journal\, working\, blocked\, blocked.flag) | no |
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
@@ -50,6 +50,8 @@ agentnav app                 lo que corre el acceso directo: servidor arriba, ve
 ```
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
+
+Si tu prompt de shell es decorado (oh-my-posh, starship), poné en `settings.json` un `prompt_regex` que lo reconozca; si no, `adopt` y `close` esperan 15 s y 5 s de más.
 
 `ctrl+b c` y el `+` de la barra abren la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
 
@@ -103,12 +105,18 @@ servidor propio.
   pantalla antes, así que el panel se pone en rojo igual.
 - El hook de desbloqueo sólo lanza PowerShell si existe la marca de **esa** sesión (`CLAUDE_CODE_SESSION_ID`);
   cuesta ~60 ms por herramienta en el resto de los casos.
-- Tras reiniciar el servidor (`herdr server stop` + `agentnav up`), Herdr restaura los espacios con un panel vacío;
-  `agentnav`, `up` y `open` reponen los agentes de los proyectos registrados en ese mismo panel.
+- Tras reiniciar el servidor (`herdr server stop` + `agentnav up`), Herdr restaura los espacios y, con
+  `resume_agents_on_restore`, relanza cada Claude unos segundos después. `agentnav`, `up` y `open` esperan a que eso
+  termine y reponen sólo los que falten: en el panel vacío si el espacio volvió con un solo panel sin agente, si no en
+  pestañas nuevas.
+- `continue` nunca retoma una conversación que esté abierta en una terminal ajena a Herdr (mira la línea de comandos
+  de cada `claude.exe`); en ese caso arranca una nueva y lo dice.
+- Cada pedido queda guardado en texto plano: 300 caracteres en el diario y en `working\<sid>`, 80 en `hook.log` y 80
+  van a Herdr (`session.json`). Una clave pegada en un prompt queda en esos lugares.
 - `agentnav open` desde fuera de Herdr no abre otra pestaña si ya hay un cliente de Herdr abierto; `agentnav attach` sí.
 - El servidor de Herdr retiene como directorio actual la carpeta desde la que se lo arrancó: levantalo con `agentnav up`
   (o el `.vbs` de inicio), nunca desde la carpeta de un proyecto. `doctor` lo verifica.
 
 ## Requisitos
 
-Windows 10/11, Herdr 0.9.5 o superior (canal estable), Python 3 con el lanzador `py`, Claude Code, Windows Terminal, git (opcional, para la columna de rama).
+Windows 10/11, Herdr 0.9.5 o superior (canal estable), Python 3.11+ de 64 bits con el lanzador `py` (en 32 bits el escaneo de procesos no funciona), Claude Code, Windows Terminal, git (opcional, para la columna de rama).

@@ -112,6 +112,16 @@ def api(*args, timeout=120):
     return r if isinstance(r, dict) else {}
 
 
+def field(r, *keys):
+    """r["a"]["b"] con un error legible si Herdr devolvió otra forma (un KeyError pelado no llega al aviso)."""
+    cur = r
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            raise AgentNavError(f"respuesta de herdr sin {'.'.join(keys)}: {str(r)[:160]}")
+        cur = cur[k]
+    return cur
+
+
 def server_running():
     code, out, err = run("status", "server", timeout=15)
     return "status: running" in (out + err)
@@ -427,6 +437,7 @@ def last_herdr_session(path, exclude=()):
     """Id de la última conversación que recibió pedidos DENTRO de un panel de Herdr en esa carpeta, según el diario,
     siempre que Claude todavía la guarde. Herdr retoma lo de Herdr: lo que corre en otra terminal no se toca."""
     want = _norm_path(path)
+    skip = {str(x).lower() for x in exclude}
     d = _claude_project_dirs().get(claude_project_key(path).lower())
     if not d:
         return None
@@ -440,7 +451,7 @@ def last_herdr_session(path, exclude=()):
             if e["event"] not in ("prompt", "stop") or not e["cwd"] or _norm_path(e["cwd"]) != want:
                 continue
             sid = next((n[:-6] for n in files if n.lower().startswith(e["sid"].lower())), None)
-            if sid and sid not in exclude:
+            if sid and sid.lower() not in skip:
                 return sid
     return None
 
@@ -592,18 +603,52 @@ def _under_herdr(proc, by_pid):
     return False
 
 
-def claudes_outside_herdr(path):
-    """Cuántos Claude Code corren en esa carpeta fuera de Herdr (una pestaña de Windows Terminal, por ejemplo)."""
+def _outside_claudes(path):
+    """Los Claude Code que corren en esa carpeta fuera de Herdr (una pestaña de Windows Terminal, por ejemplo)."""
     procs = _procs()
     by_pid = {p["pid"]: p for p in procs}
     want = _norm_path(path)
-    n = 0
+    out = []
     for p in procs:
         is_claude = p["name"] == "claude.exe" or (p["name"] == "node.exe" and "claude" in p["cmd"].lower()
                                                    and (by_pid.get(p["ppid"]) or {}).get("name") != "claude.exe")
         if is_claude and p["cwd"] and _norm_path(p["cwd"]) == want and not _under_herdr(p, by_pid):
-            n += 1
-    return n
+            out.append(p)
+    return out
+
+
+def claudes_outside_herdr(path):
+    """Cuántos Claude Code corren en esa carpeta fuera de Herdr."""
+    return len(_outside_claudes(path))
+
+
+def newest_session(path):
+    """Id de la conversación más nueva guardada para esa carpeta: la que `claude --continue` elige."""
+    d = _claude_project_dirs().get(claude_project_key(path).lower())
+    if not d:
+        return None
+    try:
+        files = [os.path.join(d, n) for n in os.listdir(d) if n.endswith(".jsonl")]
+        return os.path.basename(max(files, key=os.path.getmtime))[:-6].lower() if files else None
+    except (OSError, ValueError):
+        return None
+
+
+def sids_outside_herdr(path):
+    """Conversaciones que un Claude de FUERA de Herdr tiene abiertas en esa carpeta, en minúsculas: el id de
+    `--resume X` / `-r X` de su línea de comandos; si alguno arrancó con --continue o sin id no se sabe cuál agarró,
+    así que cuenta la más nueva de la carpeta (es la que --continue elige). Un --resume sobre una de éstas pondría dos
+    Claude en el mismo .jsonl."""
+    out = set()
+    for p in _outside_claudes(path):
+        m = re.search(r"(?:--resume|-r)(?:=|\s+)([0-9A-Za-z-]{8,})", p.get("cmd") or "")
+        if m:
+            out.add(m.group(1).lower())
+        else:
+            sid = newest_session(path)
+            if sid:
+                out.add(sid)
+    return out
 
 
 def herdr_processes():
@@ -690,10 +735,13 @@ def _continue_args(a, path, say, used, others_live):
     """Qué conversación retoma un Claude con `continue`: la última que tuvo pedidos dentro de Herdr en esa carpeta
     (--resume), que no esté viva en otro panel. Sin una, --continue sólo si ningún otro Claude corre en la carpeta:
     --continue agarra la conversación MÁS NUEVA, que puede ser la que está abierta en otra terminal."""
-    sid = last_herdr_session(path, exclude=used)
+    outside = sids_outside_herdr(path)  # abiertas en una terminal ajena a Herdr: no se retoman
+    sid = last_herdr_session(path, exclude=set(used) | outside)
     if sid:
         used.add(sid)
         return ["--resume", sid]
+    if outside:
+        say(f"  {a['name']}: la última conversación de Herdr acá está abierta en otra terminal; no la retomo.")
     if not has_conversation(path):
         return []
     if others_live:
@@ -727,12 +775,21 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
         return False
 
 
-PROMPT_RE = r"(PS [^\n]*> ?|\$ ?)$"  # prompt de pwsh / Windows PowerShell, o de un shell tipo bash
+# Prompt de pwsh / Windows PowerShell, o de un shell tipo bash, con espacio o salto de línea finales. Un prompt
+# decorado (oh-my-posh, starship) se declara en settings.json → "prompt_regex" (sintaxis de regex de Rust/Herdr).
+PROMPT_RE = r"(PS [^\n]*>|\$) ?\s*$"
+
+
+def prompt_regex():
+    try:
+        return str(load_settings().get("prompt_regex") or "") or PROMPT_RE
+    except AgentNavError:
+        return PROMPT_RE
 
 
 def wait_prompt(pane, timeout_ms):
     """Espera a que el panel muestre un prompt de shell. Devuelve False si venció el plazo (y se sigue igual)."""
-    code, _, _ = run("pane", "wait-output", pane, "--regex", PROMPT_RE, "--source", "visible",
+    code, _, _ = run("pane", "wait-output", pane, "--regex", prompt_regex(), "--source", "visible",
                      "--timeout", str(timeout_ms), timeout=timeout_ms / 1000 + 5)
     return code == 0
 
@@ -774,9 +831,9 @@ def _new_pane(a, wid, path, prev_pane, label):
         if a["ratio"]:
             cli += ["--ratio", str(a["ratio"])]
         r = api(*cli)
-        return r["pane"]["pane_id"]
+        return field(r, "pane", "pane_id")
     t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--no-focus")
-    return t["root_pane"]["pane_id"]
+    return field(t, "root_pane", "pane_id")
 
 
 def _idle_shell_pane(snap, wid):
@@ -883,6 +940,17 @@ def _open_project(p, say, start_timeout_ms):
         live = [a for a in snap["agents"] if a.get("workspace_id") == wid]
         # Sólo se reponen agentes que Herdr conoce; los paneles de shell no se distinguen de uno abierto a mano.
         missing = [a for a in wanted if a["kind"] != SHELL_KIND and not _agent_present(live, a["name"], a["kind"])]
+        # Un Claude que Herdr reanudó con otro nombre (o sin nombre) en la carpeta del proyecto también cuenta.
+        named = {agent_name(a["name"], set()) for a in wanted}
+        spare = [x for x in live if x.get("name") not in named and x.get("cwd") and _norm_path(x["cwd"]) == _norm_path(p["path"])]
+        still = []
+        for a in missing:
+            hit = next((x for x in spare if x.get("agent") == a["kind"]), None)
+            if hit:
+                spare.remove(hit)
+            else:
+                still.append(a)
+        missing = still
         if not missing:
             say(f"{p['name']}: ya estaba abierto, enfocado.")
             return "focused", True
@@ -896,9 +964,31 @@ def _open_project(p, say, start_timeout_ms):
         raise AgentNavError(f"{p['name']}: la carpeta no existe: {p['path']}")
     say(f"{p['name']}: abriendo espacio en {p['path']}…")
     r = api("workspace", "create", "--cwd", p["path"], "--label", p["name"])
-    wid = r["workspace"]["workspace_id"]
-    ok = _place_agents(p, wid, wanted, taken, r["root_pane"]["pane_id"], r["tab"]["tab_id"], start_timeout_ms, say, live_sids)
+    wid = field(r, "workspace", "workspace_id")
+    ok = _place_agents(p, wid, wanted, taken, field(r, "root_pane", "pane_id"), field(r, "tab", "tab_id"), start_timeout_ms, say, live_sids)
     return "created", ok
+
+
+def _wait_agents_settled(min_wait=4.0, quiet=2.0, cap=25.0):
+    """Con resume_agents_on_restore, Herdr relanza `claude --resume` en cada panel restaurado unos segundos después
+    de recrear los espacios. Reponer antes de eso duplicaría cada Claude. Espera un mínimo y después a que la lista
+    de agentes (y sus launch_pending) no cambie durante `quiet` segundos."""
+    t0 = time.monotonic()
+    last, stable_since = None, None
+    while time.monotonic() - t0 < cap:
+        try:
+            snap = snapshot()
+        except AgentNavError:
+            break
+        state = tuple(sorted((a.get("pane_id") or "", bool(a.get("launch_pending")), bool(a.get("interactive_ready")))
+                             for a in snap["agents"]))
+        pending = any(a.get("launch_pending") for a in snap["agents"])
+        if state != last:
+            last, stable_since = state, time.monotonic()
+        if (time.monotonic() - t0 >= min_wait and not pending and stable_since is not None
+                and time.monotonic() - stable_since >= quiet):
+            return
+        time.sleep(0.5)
 
 
 def restore_projects(projects, say=print, wait=3.0):
@@ -912,7 +1002,9 @@ def restore_projects(projects, say=print, wait=3.0):
             break
         time.sleep(0.3)
     if found:
-        say(f"espacios restaurados por Herdr: {', '.join(p['name'] for p in found)}; repongo los agentes.")
+        say(f"espacios restaurados por Herdr: {', '.join(p['name'] for p in found)}; espero a que termine de reanudar…")
+        _wait_agents_settled()
+        say("repongo los agentes que falten.")
     for p in found:
         try:
             open_project(p, say)
@@ -933,6 +1025,10 @@ def close_project(p, say=print, grace_ms=5000):
     claudes = [a for a in snap["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude" and a.get("pane_id")]
     polite = [a for a in claudes if a.get("interactive_ready") and not a.get("launch_pending")
               and a.get("agent_status") in ("idle", "done")]
+    if polite:  # releer justo antes de escribir: entre el snapshot y el /exit pudo cambiar de estado
+        fresh = {a.get("pane_id"): a for a in snapshot()["agents"]}
+        polite = [a for a in polite if (fresh.get(a["pane_id"]) or {}).get("agent_status") in ("idle", "done")
+                  and not (fresh.get(a["pane_id"]) or {}).get("launch_pending")]
     for a in polite:
         try:
             api("pane", "send-text", a["pane_id"], "/exit")
@@ -956,7 +1052,16 @@ def focus_herdr_window():
     import ctypes
     from ctypes import wintypes
     _, clients = herdr_processes()
-    hosts = {c["ppid"] for c in clients}
+    # El cliente puede estar dentro de una pwsh (herdr tipeado en una pestaña): la ventana es de un ancestro más arriba.
+    by_pid = {p["pid"]: p for p in _procs()}
+    hosts = set()
+    for c in clients:
+        seen, p = set(), by_pid.get(c["ppid"])
+        while p and p["pid"] not in seen:
+            seen.add(p["pid"])
+            hosts.add(p["pid"])
+            p = by_pid.get(p["ppid"])
+        hosts.add(c["ppid"])
     if not hosts:
         return False
     u32 = ctypes.windll.user32
@@ -1144,9 +1249,10 @@ def _notify_error(fn):
     def wrapped(*args, **kw):
         try:
             return fn(*args, **kw)
-        except AgentNavError as e:
+        except Exception as e:  # también un KeyError o similar: desde la tecla o el gancho moriría en silencio
+            msg = str(e) if isinstance(e, AgentNavError) else f"{type(e).__name__}: {e}"
             try:
-                run("notification", "show", "AgentNav", "--body", str(e)[:200], "--sound", "none", timeout=5)
+                run("notification", "show", "AgentNav", "--body", msg[:200], "--sound", "none", timeout=5)
             except AgentNavError:
                 pass
             raise
@@ -1174,7 +1280,7 @@ def cmd_tab(mode="", say=print, start_timeout_ms=90000):
     if a is None:
         return 0
     a = dict(a, name=label)
-    return 0 if _start_herdr_agent(a, path, t["root_pane"]["pane_id"], start_timeout_ms, say, set(), True) else 1
+    return 0 if _start_herdr_agent(a, path, field(t, "root_pane", "pane_id"), start_timeout_ms, say, set(), True) else 1
 
 
 def _tab_path(cwd, project):
@@ -1216,6 +1322,11 @@ def cmd_adopt(argv, say=print, start_timeout_ms=90000):
             return 0
     else:
         label = str(ctx.get("tab_label") or "")
+        if "tab_label" not in ctx:  # por si una versión de Herdr deja de mandarlo: preguntar antes que no hacer nada
+            try:
+                label = str(field(api("tab", "get", tid), "tab", "label") or "")
+            except AgentNavError:
+                pass
         if not re.fullmatch(r"\d+", label):
             say(f"adopt: {tid} ya tiene nombre ({label!r}); la dejo como está.")
             return 0
@@ -1255,7 +1366,7 @@ def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
     path = _tab_path(hint, project)
     a = _tab_agent(snap, wid, {"pane_id": (src or {}).get("pane_id")}, project)
     if not wait_prompt(pid, 15000):
-        raise AgentNavError(f"{pid}: el shell no llegó al prompt; queda como está")
+        say(f"{pid}: no vi el prompt del shell en 15 s (¿prompt decorado? settings.json → prompt_regex); sigo igual.")
     if _norm_path(mine.get("cwd") or "") != _norm_path(path):
         say(f"{ws.get('label') or wid}: {pid} → {path}")
         # Comilla simple duplicada: dentro de '…' en PowerShell es la única forma de escapar (C:\it's\x rompía el parseo).
@@ -1414,6 +1525,14 @@ def cmd_ntfy_test():
 
 # ---------------------------------------------------------------- doctor
 
+def _same_file(a, b):
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
 def cmd_doctor():
     results = []  # (True|False|None, texto)  None = aviso, no cuenta como problema
 
@@ -1443,7 +1562,16 @@ def cmd_doctor():
               "config.toml: ctrl+b c abre la pestaña de AgentNav (misma carpeta, mismo agente)")
         check("agentnav.py tab shell" in cfg, "config.toml: ctrl+b shift+c abre la pestaña pelada por la API")
         check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
-        check("[session]" in cfg and "resume_agents_on_restore = true" in cfg, "config.toml: agentes se reanudan al restaurar")
+        try:
+            import tomllib
+            parsed = tomllib.loads(cfg)
+            check(bool((parsed.get("session") or {}).get("resume_agents_on_restore")), "config.toml: agentes se reanudan al restaurar")
+        except Exception as e:  # tomllib falta (Python < 3.11) o el TOML está roto
+            check(False, f"config.toml no parsea: {e}")
+        repo_cfg = os.path.join(HOME, "config", "herdr.config.toml")
+        if os.path.isfile(repo_cfg):
+            same = _same_file(repo_cfg, cfg_path)
+            check(same, "config.toml igual a la copia del repo" if same else f"config.toml difiere de {repo_cfg} (copiar la que esté bien)")
     except OSError:
         check(False, f"no encuentro {cfg_path}")
     # Plugin de Herdr (gancho tab.created → agentnav adopt)
@@ -1468,7 +1596,19 @@ def cmd_doctor():
         check(bom, f"hook {os.path.basename(hook)} guardado como UTF-8 con BOM" if bom else f"hook {hook} SIN BOM: PowerShell 5.1 va a romper los acentos")
     else:
         check(False, f"falta el hook {hook}")
-    check(os.path.isfile(unblock), f"hook de desbloqueo {os.path.basename(unblock)}" if os.path.isfile(unblock) else f"falta {unblock}")
+    if os.path.isfile(unblock):
+        with open(unblock, "rb") as f:
+            head = f.read(16)
+        ok = not head.startswith(b"\xef\xbb\xbf") and head.lstrip().lower().startswith(b"@echo")
+        check(ok, f"hook de desbloqueo {os.path.basename(unblock)} sin BOM y con @echo off" if ok
+              else f"{unblock}: tiene BOM o no empieza con @echo off (cmd fallaría en cada herramienta)")
+    else:
+        check(False, f"falta {unblock}")
+    for name in ("agentnav-state.ps1", "agentnav-unblock.cmd"):
+        a, b = os.path.join(HOME, "hooks", name), os.path.join(CLAUDE_HOME, "hooks", name)
+        if os.path.isfile(a) and os.path.isfile(b):
+            same = _same_file(a, b)
+            check(same, f"{name} igual a la copia del repo" if same else f"{name} difiere entre {a} y {b}")
     try:
         settings = _read_json_file(os.path.join(CLAUDE_HOME, "settings.json"), "settings.json de Claude") or {}
         hooks = settings.get("hooks") or {}
@@ -1484,6 +1624,11 @@ def cmd_doctor():
                            ("SessionEnd", "agentnav-state.ps1\" end"), ("Notification", "agentnav-state.ps1\" notify"),
                            ("PostToolUse", "agentnav-unblock.cmd")):
             check(registered(ev, needle), f"settings.json de Claude: hook {ev}")
+        matchers = [str(block.get("matcher") or "") for block in hooks.get("Notification") or []
+                    if any("agentnav-state.ps1" in str(h.get("command", "")) for h in block.get("hooks") or [])]
+        okm = any("permission_prompt" in m and "idle_prompt" in m for m in matchers)
+        check(okm, "settings.json de Claude: Notification con matcher permission_prompt|idle_prompt" if okm
+              else f"settings.json de Claude: el hook Notification no filtra permission_prompt|idle_prompt (matcher: {matchers or 'ninguno'})")
         check(registered("SessionStart", "herdr-agent-state.ps1"), "settings.json de Claude: hook propio de Herdr (SessionStart)")
     except AgentNavError as e:
         check(False, str(e))
@@ -1527,8 +1672,14 @@ def cmd_doctor():
     # Arranque, Python, Windows Terminal
     vbs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Herdr server.vbs")
     check(os.path.isfile(vbs), "arranque automático del servidor (Herdr server.vbs en Inicio)" if os.path.isfile(vbs) else f"falta {vbs}")
+    repo_vbs = os.path.join(HOME, "startup", "Herdr server.vbs")
+    if os.path.isfile(vbs) and os.path.isfile(repo_vbs) and not _same_file(vbs, repo_vbs):
+        check(False, f"Herdr server.vbs de Inicio difiere de {repo_vbs}")
     check(bool(shutil.which("wt.exe") or shutil.which("wt")), "Windows Terminal (wt.exe)")
-    check(True, f"Python {sys.version.split()[0]} en {sys.executable}")
+    import struct
+    bits = struct.calcsize("P") * 8
+    check(bits == 64, f"Python {sys.version.split()[0]} de {bits} bits en {sys.executable}" if bits == 64
+          else f"Python de {bits} bits: el escaneo de procesos no funciona y 'continue' podría pisar una conversación abierta afuera")
     check(bool(shutil.which("git")), "git (para rama y cambios en el selector)")
 
     bad = 0

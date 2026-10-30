@@ -17,6 +17,8 @@ Uso:
   agentnav hoy [ayer|AAAA-MM-DD]
                            diario del día: qué le pediste a cada proyecto y cuánto trabajó
   agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque)
+  agentnav theme [nombre]  tema de colores de Herdr: sin nombre lista los disponibles (los de Herdr y las paletas de
+                           config\\themes.json: cs16, matrix, procomm); con nombre lo aplica y recarga la config
   agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
@@ -1515,6 +1517,145 @@ def ntfy_send(title, body, settings=None):
     return None
 
 
+# ---------------------------------------------------------------- temas
+
+HERDR_THEMES = ("catppuccin", "catppuccin-latte", "terminal", "tokyo-night", "dracula", "nord", "gruvbox", "one-dark",
+                "solarized", "kanagawa", "rose-pine", "vesper")
+THEME_TOKENS = ("accent", "panel_bg", "sidebar_bg", "active_row_bg", "selection_bg", "surface0", "surface1", "surface_dim",
+                "overlay0", "overlay1", "text", "subtext0", "mauve", "green", "yellow", "red", "blue", "teal", "peach")
+THEMES_PATH = os.path.join(HOME, "config", "themes.json")
+HERDR_CFG = os.path.join(os.environ.get("APPDATA", ""), "herdr", "config.toml")
+REPO_CFG = os.path.join(HOME, "config", "herdr.config.toml")
+
+
+def load_themes():
+    data = _read_json_file(THEMES_PATH, "themes.json") or {}
+    out = {}
+    for name, t in data.items():
+        if name.startswith("_") or not isinstance(t, dict):
+            continue
+        custom = {k: str(v) for k, v in (t.get("custom") or {}).items() if k in THEME_TOKENS}
+        out[name.lower()] = {"title": str(t.get("title") or ""), "base": str(t.get("base") or "catppuccin"), "custom": custom}
+    return out
+
+
+def _theme_sections(text):
+    """Divide el config.toml en (antes, [theme] y [theme.custom*], después) respetando comentarios ajenos."""
+    lines = text.splitlines(keepends=True)
+    head = re.compile(r"^\s*\[+\s*([^\]]*?)\s*\]+")
+    before, mine, after, where = [], [], [], 0  # 0 = antes, 1 = adentro de theme, 2 = después
+    for line in lines:
+        m = head.match(line)
+        if m:
+            sec = m.group(1).strip()
+            if sec == "theme" or sec.startswith("theme."):
+                where = 1
+            elif where == 1:
+                where = 2
+        (before, mine, after)[where].append(line)
+    return "".join(before), "".join(mine), "".join(after)
+
+
+def current_theme(text):
+    """(nombre base, dict de [theme.custom]) según el TOML; sin tomllib, por regex."""
+    try:
+        import tomllib
+        t = tomllib.loads(text).get("theme") or {}
+        return str(t.get("name") or "catppuccin"), dict(t.get("custom") or {})
+    except Exception:
+        m = re.search(r'^\s*name\s*=\s*"([^"]*)"', text, re.M)
+        return (m.group(1) if m else "catppuccin"), {}
+
+
+def render_theme_block(base, custom, label, keep):
+    """Sección [theme] nueva: nombre base, las claves que no son nuestras (auto_switch, dark_name…) y el [theme.custom]."""
+    out = ["[theme]\n", f'name = "{base}"\n']
+    for line in keep.splitlines(keepends=True):
+        if re.match(r"^\s*(name\s*=|\[)", line):
+            continue
+        out.append(line)
+    if out[-1].strip():
+        out.append("\n")
+    if custom:
+        out.append(f"# AgentNav theme: {label} (agentnav theme {label}). Tokens sobre el tema base; editables en config\\themes.json.\n")
+        out.append("[theme.custom]\n")
+        for k in THEME_TOKENS:
+            if k in custom:
+                out.append(f'{k} = "{custom[k]}"\n')
+        out.append("\n")
+    return "".join(out)
+
+
+def apply_theme(name, say=print):
+    themes = load_themes()
+    low = name.strip().lower()
+    if low in themes:
+        base, custom, label = themes[low]["base"], themes[low]["custom"], low
+    elif low in HERDR_THEMES:
+        base, custom, label = low, {}, low
+    else:
+        raise AgentNavError(f"no conozco el tema '{name}'. Probá: agentnav theme")
+    try:
+        with open(HERDR_CFG, encoding="utf-8") as f:
+            live = f.read()
+    except OSError as e:
+        raise AgentNavError(f"no puedo leer {HERDR_CFG}: {e}")
+    before, mine, after = _theme_sections(live)
+    if not mine:
+        mine, after = "[theme]\n", ("\n" + before + after)  # sin sección: va al principio
+        before = ""
+    # De lo que había, conservar lo que no es nuestro: todo menos name y el bloque [theme.custom*]
+    keep_lines, skipping = [], False
+    for line in mine.splitlines(keepends=True):
+        m = re.match(r"^\s*\[\s*([^\]]*?)\s*\]", line)
+        if m:
+            skipping = m.group(1).strip().startswith("theme.custom")
+            continue
+        if skipping or line.lstrip().startswith("# AgentNav theme:"):
+            continue
+        keep_lines.append(line)
+    new = before + render_theme_block(base, custom, label, "".join(keep_lines)) + after
+    try:
+        import tomllib
+        tomllib.loads(new)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise AgentNavError(f"el config.toml resultante no parsea, no lo escribo: {e}")
+    for path in (HERDR_CFG, REPO_CFG):
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new)
+        except OSError as e:
+            raise AgentNavError(f"no pude escribir {path}: {e}")
+    try:
+        api("server", "reload-config", timeout=15)
+        say(f"tema {label}: aplicado y recargado" + (f" ({themes[low]['title']})" if low in themes else "") + ".")
+    except AgentNavError as e:
+        say(f"tema {label}: escrito en config.toml; el servidor no recargó ({e}). Se toma al reiniciar o con herdr server reload-config.")
+    return 0
+
+
+def cmd_theme(name=""):
+    if name:
+        return apply_theme(name)
+    themes = load_themes()
+    try:
+        with open(HERDR_CFG, encoding="utf-8") as f:
+            base, custom = current_theme(f.read())
+    except OSError:
+        base, custom = "?", {}
+    cur = next((n for n, t in themes.items() if t["base"] == base and t["custom"] == custom), base if not custom else f"{base} + custom")
+    print(f"tema actual: {cur}")
+    print("paletas de AgentNav (config\\themes.json):")
+    for n, t in themes.items():
+        print(f"  {n:<12} {t['title']}")
+    print("temas de Herdr:")
+    print("  " + ", ".join(HERDR_THEMES))
+    print("aplicar: agentnav theme <nombre>")
+    return 0
+
+
 def cmd_ntfy_test():
     err = ntfy_send("AgentNav", "aviso de prueba: si lo ves en el teléfono, los avisos funcionan.")
     if err:
@@ -1883,6 +2024,8 @@ def main(argv):
         return cmd_hoy(rest)
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd in ("theme", "tema"):
+        return cmd_theme(rest.strip())
     if cmd in ("ntfy-test", "ntfy"):
         return cmd_ntfy_test()
     if cmd == "up":

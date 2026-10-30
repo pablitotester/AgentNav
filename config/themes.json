@@ -1,0 +1,78 @@
+{
+  "_": "Paletas de AgentNav para la interfaz de Herdr (barra lateral, pestañas, bordes, popup). Se aplican con `agentnav theme <nombre>`: van a [theme.custom] del config.toml sobre el tema base. Los 19 tokens que Herdr acepta: accent, panel_bg, sidebar_bg, active_row_bg, selection_bg, surface0, surface1, surface_dim, overlay0, overlay1, text, subtext0, mauve, green, yellow, red, blue, teal, peach. El texto de adentro de cada panel lo pinta el programa que corre ahí (pwsh, Claude), no Herdr.",
+  "cs16": {
+    "title": "Counter-Strike 1.6: consola GoldSrc, verde oliva y texto arena con naranja",
+    "base": "catppuccin",
+    "custom": {
+      "panel_bg": "#3b4531",
+      "sidebar_bg": "#2f3827",
+      "active_row_bg": "#4c5844",
+      "selection_bg": "#5a6650",
+      "surface0": "#46513c",
+      "surface1": "#525e47",
+      "surface_dim": "#2a3122",
+      "overlay0": "#7a8a6a",
+      "overlay1": "#93a383",
+      "text": "#d4c99a",
+      "subtext0": "#a9a07a",
+      "accent": "#e3a93b",
+      "mauve": "#c9a96b",
+      "green": "#8fbc5a",
+      "yellow": "#f0c04b",
+      "red": "#d9583b",
+      "blue": "#8da68c",
+      "teal": "#9fbf8a",
+      "peach": "#ff9f27"
+    }
+  },
+  "matrix": {
+    "title": "Matrix: negro y fósforo verde",
+    "base": "catppuccin",
+    "custom": {
+      "panel_bg": "#000000",
+      "sidebar_bg": "#020a03",
+      "active_row_bg": "#003b0f",
+      "selection_bg": "#005a17",
+      "surface0": "#0a1f0d",
+      "surface1": "#103015",
+      "surface_dim": "#000000",
+      "overlay0": "#0f6b24",
+      "overlay1": "#1f9a3a",
+      "text": "#00ff41",
+      "subtext0": "#00b32c",
+      "accent": "#00ff41",
+      "mauve": "#39ff14",
+      "green": "#00ff41",
+      "yellow": "#a8ff60",
+      "red": "#ff3b3b",
+      "blue": "#00c957",
+      "teal": "#00e676",
+      "peach": "#7fff00"
+    }
+  },
+  "procomm": {
+    "title": "Procomm Plus (DOS): azul CGA, texto blanco, resaltes amarillo y cian",
+    "base": "catppuccin",
+    "custom": {
+      "panel_bg": "#0000aa",
+      "sidebar_bg": "#000080",
+      "active_row_bg": "#0000d4",
+      "selection_bg": "#00aaaa",
+      "surface0": "#1a1aaa",
+      "surface1": "#3333bb",
+      "surface_dim": "#000060",
+      "overlay0": "#5555ff",
+      "overlay1": "#aaaaaa",
+      "text": "#ffffff",
+      "subtext0": "#aaaaaa",
+      "accent": "#ffff55",
+      "mauve": "#ff55ff",
+      "green": "#55ff55",
+      "yellow": "#ffff55",
+      "red": "#ff5555",
+      "blue": "#5555ff",
+      "teal": "#55ffff",
+      "peach": "#ffaa00"
+    }
+  }
+}

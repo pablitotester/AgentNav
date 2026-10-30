@@ -45,9 +45,12 @@ agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, arranque, registro
+agentnav theme [nombre]      tema de colores de Herdr: lista los disponibles o aplica uno (cs16, matrix, procomm, o los de Herdr)
 agentnav ntfy-test           aviso de prueba al teléfono
 agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
 ```
+
+Temas: `agentnav theme` lista y `agentnav theme matrix` aplica. Las paletas propias viven en `config\themes.json` (cs16 = consola de Counter-Strike 1.6, matrix, procomm = Procomm Plus de DOS) y se escriben como `[theme.custom]` sobre el tema base en el `config.toml`, con recarga inmediata. Pintan la interfaz de Herdr (barra lateral, pestañas, bordes, popup); el texto dentro de cada panel lo pinta el programa que corre ahí.
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
 

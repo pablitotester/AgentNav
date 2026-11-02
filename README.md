@@ -28,6 +28,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 | Herdr como app | `Herdr.lnk` en el escritorio → `wscript C:\AgentNav\Herdr.vbs` (sin consola) → `agentnav app` | `Herdr.vbs` |
 | Plugin de Herdr | `herdr plugin link C:\AgentNav\plugin` (ganchos `tab.created` y `pane.created` → `agentnav adopt`) | `plugin\herdr-plugin.toml` |
 | Estado del hook | `%LOCALAPPDATA%\AgentNav\` (hook.log, journal\, working\, blocked\, blocked.flag) | no |
+| Tests | `py -X utf8 -m unittest discover -s tests` (funciones puras, sin Herdr ni red) | `tests\test_agentnav.py` |
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
 
@@ -46,7 +47,7 @@ agentnav recent              carpetas donde usaste Claude Code y no están regis
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, arranque, registro
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
-agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); --force si hay agentes ocupados
+agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); --force si hay agentes ocupados o para reinstalar el mismo tag
 agentnav ntfy-test           aviso de prueba al teléfono
 agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
 ```
@@ -55,11 +56,11 @@ Temas: `ctrl+b`, soltar, `alt+t` abre el selector dentro de Herdr (flechas, Ente
 
 Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el teclado en español no entrega).
 
-Si tu prompt de shell es decorado (oh-my-posh, starship), poné en `settings.json` un `prompt_regex` que lo reconozca; si no, `adopt` y `close` esperan 15 s y 5 s de más.
+Si tu prompt de shell es decorado (oh-my-posh, starship), poné en `settings.json` un `prompt_regex` que lo reconozca (el de fábrica entiende pwsh, cmd y bash); si no, `adopt` y `close` esperan 15 s y 5 s de más.
 
 `ctrl+b c` y el `+` de la barra abren la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
 
-El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created`; `adopt` toma sólo las pestañas con la etiqueta numérica de Herdr (las del `+`), espera el prompt, hace `Set-Location` a la carpeta y arranca el agente en ese mismo panel. Las que ya traen nombre (las de `tab`, `open`, o `shell`) se dejan como están, y mientras `open` arma un espacio la adopción queda en pausa. `doctor` avisa si el plugin no está enlazado.
+El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created`; `adopt` toma sólo las pestañas con la etiqueta numérica de Herdr (las del `+`), espera el prompt, cambia a la carpeta con la orden del shell que atiende el panel (`Set-Location` en pwsh, `cd /d` en cmd, `cd` en bash; lo mira con `pane process-info`) y arranca el agente en ese mismo panel. Las que ya traen nombre (las de `tab`, `open`, o `shell`) se dejan como están, y mientras `open` arma un espacio la adopción queda en pausa. `doctor` avisa si el plugin no está enlazado.
 
 Los splits (`ctrl+b v`, `ctrl+b -` o el menú del panel) pasan por el mismo gancho con `pane.created`: un panel que nace en el `new_cwd` fijo (C:\) dentro de una pestaña que ya tenía otros se lleva a la carpeta del proyecto y arranca el mismo agente que el hermano más reciente de esa pestaña. Un panel creado con `--cwd` propio, o el panel raíz de una pestaña nueva (de ése se ocupa `tab.created`), se deja como está.
 
@@ -92,8 +93,13 @@ Los paneles `shell` no se reponen al reabrir un proyecto ya abierto (no se disti
 ## settings.json
 
 ```json
-{ "ntfy": { "topic": "", "server": "https://ntfy.sh", "min_seconds": 120, "min_seconds_blocked": 0 } }
+{ "ntfy": { "topic": "", "server": "https://ntfy.sh", "min_seconds": 120, "min_seconds_blocked": 0 },
+  "prompt_regex": "", "journal_days": 90, "herdr_fork": { "repo": "" } }
 ```
+
+`prompt_regex`: regex (sintaxis de Rust) del prompt del shell si el de fábrica no lo reconoce. `journal_days`: cuántos
+días se conserva el diario de `%LOCALAPPDATA%\AgentNav\journal` (el hook borra los días más viejos al cerrar una sesión;
+0 = nunca). `herdr_fork.repo`: el fork de Herdr con los temas compilados, para `herdr-sync` y `doctor`.
 
 Con `topic` vacío no hay avisos. Con topic, el hook publica cuando un turno termina y llevaba al menos `min_seconds`,
 y cuando pide permiso y llevaba al menos `min_seconds_blocked` (0: siempre, porque el permiso suele pedirse a los
@@ -145,7 +151,8 @@ Copias de referencia del parche, el workflow y el instalador: `herdr-fork\` en e
 - `continue` nunca retoma una conversación que esté abierta en una terminal ajena a Herdr (mira la línea de comandos
   de cada `claude.exe`); en ese caso arranca una nueva y lo dice.
 - Cada pedido queda guardado en texto plano: 300 caracteres en el diario y en `working\<sid>`, 80 en `hook.log` y 80
-  van a Herdr (`session.json`). Una clave pegada en un prompt queda en esos lugares.
+  van a Herdr (`session.json`). Una clave pegada en un prompt queda en esos lugares; el diario se poda a `journal_days`
+  días (90), el resto se recicla solo.
 - `agentnav open` desde fuera de Herdr no abre otra pestaña si ya hay un cliente de Herdr abierto; `agentnav attach` sí.
 - El servidor de Herdr retiene como directorio actual la carpeta desde la que se lo arrancó: levantalo con `agentnav up`
   (o el `.vbs` de inicio), nunca desde la carpeta de un proyecto. `doctor` lo verifica.

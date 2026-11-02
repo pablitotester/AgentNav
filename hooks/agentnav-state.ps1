@@ -122,6 +122,20 @@ function Append-Line([string]$path, [string]$line) {
         }
     }
 }
+function Prune-Journal {
+    # El diario guarda cada pedido en texto plano: se conserva journal_days días (settings.json; 90 por defecto, 0 = siempre).
+    # Sólo en SessionEnd, que es raro y no lo espera nadie. Se decide por la fecha del nombre (yyyy-MM-dd.log).
+    try {
+        $days = 90
+        $cfgPath = [IO.Path]::Combine($AgentNavHome, "settings.json")
+        if ([IO.File]::Exists($cfgPath) -and ([IO.File]::ReadAllText($cfgPath, [Text.Encoding]::UTF8) -match '"journal_days"\s*:\s*(\d+)')) { $days = [int]$Matches[1] }
+        if ($days -le 0) { return }
+        $limit = [DateTime]::Today.AddDays(-$days).ToString("yyyy-MM-dd")
+        foreach ($f in [IO.Directory]::GetFiles($journalDir, "????-??-??.log")) {
+            if ([IO.Path]::GetFileNameWithoutExtension($f) -lt $limit) { [IO.File]::Delete($f) }
+        }
+    } catch { }
+}
 function Prune-Markers([int]$hours = 12) {
     # Sesiones que murieron sin SessionEnd (panel cerrado, proceso matado) dejan marcas; se podan en cada evento, ~1 ms.
     try {
@@ -264,6 +278,7 @@ switch ($Action) {
 }
 if ($syncFlag -or $Action -ne "prompt") { Sync-BlockedFlag }
 if ($Action -in @("stop", "end")) { Prune-Markers }  # fuera del camino del prompt, que es el que espera el usuario
+if ($Action -eq "end") { Prune-Journal }
 
 $result = ""
 try {

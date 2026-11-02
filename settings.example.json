@@ -5,6 +5,8 @@
     "min_seconds": 120,
     "min_seconds_blocked": 0
   },
+  "prompt_regex": "",
+  "journal_days": 90,
   "herdr_fork": {
     "repo": ""
   }

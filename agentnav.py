@@ -783,7 +783,7 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
 
 # Prompt de pwsh / Windows PowerShell, o de un shell tipo bash, con espacio o salto de línea finales. Un prompt
 # decorado (oh-my-posh, starship) se declara en settings.json → "prompt_regex" (sintaxis de regex de Rust/Herdr).
-PROMPT_RE = r"(PS [^\n]*>|\$) ?\s*$"
+PROMPT_RE = r"(PS [^\n]*>|[A-Za-z]:\\[^\n]*>|\$) ?\s*$"  # pwsh, cmd (C:\x>) y bash
 
 
 def prompt_regex():
@@ -791,6 +791,49 @@ def prompt_regex():
         return str(load_settings().get("prompt_regex") or "") or PROMPT_RE
     except AgentNavError:
         return PROMPT_RE
+
+
+def default_shell():
+    """terminal.default_shell del config.toml de Herdr ("" si no está o no se puede leer)."""
+    try:
+        with open(HERDR_CFG, encoding="utf-8") as f:
+            text = f.read()
+        try:
+            import tomllib
+            return str((tomllib.loads(text).get("terminal") or {}).get("default_shell") or "")
+        except Exception:
+            m = re.search(r'^\s*default_shell\s*=\s*"([^"]*)"', text, re.M)
+            return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def _pane_shell(pane):
+    """Ejecutable que atiende el panel: el proceso en primer plano según `pane process-info`; si no se sabe,
+    el default_shell del config; si tampoco, pwsh."""
+    try:
+        info = field(api("pane", "process-info", "--pane", pane, timeout=10), "process_info")
+        fg = info.get("foreground_processes") or []
+        if fg and isinstance(fg[-1], dict):
+            name = str(fg[-1].get("name") or fg[-1].get("argv0") or "")
+            if name:
+                return name
+    except AgentNavError:
+        pass
+    return default_shell() or "pwsh"
+
+
+def _cd_command(shell, path):
+    """La orden de cambiar de carpeta en el shell del panel. `Set-Location` sólo existe en PowerShell: en cmd o bash
+    adopt fallaba siempre. Comilla simple duplicada en pwsh y '\\'' en bash; en Windows una ruta no puede llevar comillas dobles."""
+    s = os.path.basename(str(shell or "").strip().strip('"')).lower()
+    if s.endswith(".exe"):
+        s = s[:-4]
+    if s in ("pwsh", "powershell"):
+        return "Set-Location -LiteralPath '" + path.replace("'", "''") + "'"
+    if s == "cmd":
+        return 'cd /d "' + path + '"'
+    return "cd '" + path.replace("'", "'\\''") + "'"
 
 
 def wait_prompt(pane, timeout_ms):
@@ -1375,8 +1418,7 @@ def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
         say(f"{pid}: no vi el prompt del shell en 15 s (¿prompt decorado? settings.json → prompt_regex); sigo igual.")
     if _norm_path(mine.get("cwd") or "") != _norm_path(path):
         say(f"{ws.get('label') or wid}: {pid} → {path}")
-        # Comilla simple duplicada: dentro de '…' en PowerShell es la única forma de escapar (C:\it's\x rompía el parseo).
-        code, out, err = run("pane", "run", pid, "Set-Location -LiteralPath '" + path.replace("'", "''") + "'", timeout=30)
+        code, out, err = run("pane", "run", pid, _cd_command(_pane_shell(pid), path), timeout=30)
         if code != 0:
             raise AgentNavError(f"{pid}: no pude cambiar de carpeta ({(err or out)[:160]})")
         wait_prompt(pid, 5000)
@@ -1666,6 +1708,13 @@ def cmd_herdr_sync(argv, say=print):
             raise AgentNavError(f"tras herdr update quedó {inst} y el fork tiene {rel['version']}; probá de nuevo más tarde")
     elif _ver_tuple(rel["version"]) < _ver_tuple(inst):
         raise AgentNavError(f"tu Herdr ({inst}) es más nuevo que el último build del fork ({rel['version']}): el workflow corre a diario a las 06:17 UTC, o lanzalo a mano en GitHub → Actions")
+    # Mismo tag ya instalado: nada que hacer. Cada compilación da un exe distinto con el mismo código (no son
+    # reproducibles), así que el hash sólo decide con --force.
+    ours, detail = herdr_is_ours()
+    marker_now = _read_json_file(herdr_build_marker_path(), "agentnav-build.json") or {}
+    if ours and marker_now.get("tag") == rel["tag"] and "--force" not in argv:
+        say(f"{rel['tag']} ya está instalado ({detail}); --force reinstala el último exe publicado.")
+        return 0
     # Descarga y verificación
     dl = os.path.join(STATE_DIR, "herdr-download")
     os.makedirs(dl, exist_ok=True)
@@ -1687,6 +1736,7 @@ def cmd_herdr_sync(argv, say=print):
         with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
             json.dump(marker, f, indent=2)
         say(f"{rel['tag']} ya estaba instalado.")
+        shutil.rmtree(dl, ignore_errors=True)
         return 0
     # Nadie trabajando
     snap = _snapshot_or_none()
@@ -1714,6 +1764,7 @@ def cmd_herdr_sync(argv, say=print):
     with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
         json.dump(marker, f, indent=2)
     say(f"herdr.exe reemplazado por {rel['tag']} (herdr {installed_herdr_version() or '?'}).")
+    shutil.rmtree(dl, ignore_errors=True)
     return cmd_app(say)
 
 

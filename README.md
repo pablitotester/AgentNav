@@ -17,7 +17,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 | Qué | Dónde vive en uso | Copia versionada acá |
 |---|---|---|
 | Script principal | `C:\AgentNav\agentnav.py` (+ `agentnav.ps1`) | mismo |
-| Registro de proyectos | `C:\AgentNav\projects.json` | mismo |
+| Registro de proyectos | `C:\AgentNav\projects.json` | `projects.example.json` (el real no se versiona: rutas de cada PC) |
 | Ajustes (avisos ntfy) | `C:\AgentNav\settings.json` | `settings.example.json` (el real no se versiona) |
 | Hook de Claude Code | `%USERPROFILE%\.claude\hooks\agentnav-state.ps1` | `hooks/agentnav-state.ps1` |
 | Puerta del desbloqueo | `%USERPROFILE%\.claude\hooks\agentnav-unblock.cmd` | `hooks/agentnav-unblock.cmd` |
@@ -132,9 +132,32 @@ irm https://raw.githubusercontent.com/pablitotester/herdr/agentnav/agentnav/inst
 
 Corre el instalador oficial de esa misma versión apuntado al manifiesto del fork (carpeta, junction `current`, PATH,
 conpty), y si esa versión ya estaba con el exe oficial, cierra Herdr, pone el del fork verificando el SHA-256 y deja el
-marcador. No instala AgentNav: eso es clonar este repo aparte.
+marcador. No instala AgentNav: para eso está el paquete de abajo.
 
 Copias de referencia del parche, el workflow y el instalador: `herdr-fork\` en este repo.
+
+## Instalar en otra PC (paquete para un amigo)
+
+`installer\build.ps1` arma `dist\AgentNav-setup.zip` (~90 KB): una copia del repo sin `settings.json` (trae tu topic de
+ntfy) ni `projects.json`, más `Instalar.cmd`, `install.ps1`, `configurar.py` y un `LEEME.txt`.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build.ps1
+```
+
+El que lo recibe descomprime el zip y hace doble clic en `Instalar.cmd` (sin administrador). El instalador, en orden y
+salteando lo que ya esté: instala **Python 3.12 de 64 bits con `py`, git, PowerShell 7, Windows Terminal, Claude Code y
+Herdr** (con winget; sin winget, Python, git y pwsh se bajan de su sitio oficial / GitHub; Herdr es el del fork con los
+temas, o el oficial con `-HerdrOficial`); deja el repo en `C:\AgentNav` (ruta fija: la config de Herdr, el plugin y los
+`.vbs` la tienen escrita) como clon de `github.com/pablitotester/AgentNav` si hay git y acceso, o copiando el payload del zip
+(`-SinGit` fuerza la copia); crea `settings.json` desde el ejemplo con `herdr_fork.repo` y un `projects.json` vacío; pone
+los hooks en `~\.claude\hooks` y los registra en el `settings.json` de Claude sin tocar lo demás (`configurar.py`, con
+backup); `herdr integration install claude`; el `config.toml` de Herdr (con backup del anterior); `herdr plugin link`;
+`Herdr server.vbs` en Inicio; el alias en los dos perfiles; el acceso directo del escritorio; y termina con `agentnav up`
+y `agentnav doctor`. Volver a correrlo actualiza sin perder `settings.json` ni `projects.json`. Las funciones de
+`configurar.py` se prueban en `tests\test_installer.py`.
+
+Mandalo por WhatsApp, Drive o un pendrive: Gmail rechaza zips con `.cmd` adentro.
 
 ## Límites conocidos del estado
 

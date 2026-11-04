@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.tmp
 settings.json
+dist/
+projects.json
+.claude/worktrees/

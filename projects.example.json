@@ -1,0 +1,11 @@
+[
+  {
+    "name": "MiProyecto",
+    "path": "C:\\MiProyecto",
+    "agents": [
+      "claude"
+    ],
+    "kind": "claude",
+    "continue": true
+  }
+]

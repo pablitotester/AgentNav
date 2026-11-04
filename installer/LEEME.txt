@@ -1,0 +1,43 @@
+AgentNav para Windows 10/11
+===========================
+
+AgentNav es una capa fina sobre Herdr (herdr.dev) para navegar proyectos y agentes de Claude Code:
+estado exacto de cada Claude en el panel, selector de proyectos, pestañas que nacen en la carpeta
+del proyecto con su agente, diario de pedidos, doctor de la instalación y tres temas de colores.
+
+Cómo instalar
+-------------
+1. Descomprimí este zip entero en cualquier carpeta (por ejemplo Descargas\AgentNav-setup).
+2. Doble clic en Instalar.cmd. No pide administrador.
+3. Esperá: si falta algo lo baja e instala solo (Python, git, PowerShell 7, Windows Terminal,
+   Claude Code, Herdr). Con todo ya instalado tarda menos de un minuto.
+4. Al final corre "agentnav doctor" y te dice si quedó algo pendiente.
+
+Si Windows muestra "SmartScreen impidió el inicio": "Más información" → "Ejecutar de todas formas".
+El script es texto plano: podés abrir install.ps1 y leer qué hace antes de correrlo.
+
+Después
+-------
+- Doble clic en "Herdr" en el escritorio, o en una PowerShell NUEVA escribí:  agentnav
+- Primer proyecto:  agentnav new MiProyecto            (crea C:\MiProyecto y abre un Claude ahí)
+  Carpeta existente: agentnav new MiProyecto C:\ruta\a\la\carpeta
+- Dentro de Herdr: ctrl+b, soltar, alt+p = selector de proyectos · alt+t = temas · F1 = ayuda
+- La primera vez Claude Code te va a pedir iniciar sesión con tu cuenta de Anthropic.
+- Actualizar AgentNav más adelante:  agentnav update   (doctor avisa cuando hay algo nuevo)
+- Todo lo demás: C:\AgentNav\README.md
+
+Qué toca en tu PC
+-----------------
+- C:\AgentNav                                   el programa (ruta fija)
+- %USERPROFILE%\.claude\hooks\agentnav-*         hooks de Claude Code, y su registro en .claude\settings.json
+- %APPDATA%\herdr\config.toml                    config de Herdr (si tenías una, queda un .bak al lado)
+- Inicio de Windows: Herdr server.vbs            levanta el servidor al iniciar sesión
+- Perfiles de PowerShell: alias agentnav
+- Escritorio: acceso directo Herdr
+
+Opciones (en una PowerShell, desde la carpeta del zip)
+------------------------------------------------------
+  powershell -ExecutionPolicy Bypass -File .\install.ps1 -HerdrOficial    Herdr de herdr.dev, sin los temas compilados
+  powershell -ExecutionPolicy Bypass -File .\install.ps1 -SinRequisitos   no instala nada que falte, sólo configura
+Si hay git y acceso a github.com/pablitotester/AgentNav, C:\AgentNav queda como clon y se actualiza con agentnav update;
+si no, con la copia del zip. Volver a correr el instalador actualiza sin perder settings.json ni projects.json.

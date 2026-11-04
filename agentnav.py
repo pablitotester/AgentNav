@@ -32,7 +32,8 @@ Uso:
   agentnav labels          pone ya la etiqueta "<agente> · <tarea>" a todos los paneles con agente (app lo hace solo)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
-  agentnav app             lo que corre el acceso directo del escritorio: servidor arriba y la ventana de Herdr al frente
+  agentnav app             lo que corre el acceso directo del escritorio: servidor arriba y la ventana de Herdr al frente;
+                           de paso hace `update --check` y, si origin tiene commits nuevos, lo avisa dentro de Herdr
 
 Registro: C:\\AgentNav\\projects.json   (nombre, ruta, agentes a abrir)
 Ajustes:  C:\\AgentNav\\settings.json   (avisos ntfy)
@@ -1215,18 +1216,79 @@ def focus_herdr_window():
 
 
 def cmd_app(say=print):
-    """Herdr como aplicación (acceso directo del escritorio): servidor arriba, y la ventana al frente o una pestaña nueva."""
+    """Herdr como aplicación (acceso directo del escritorio): servidor arriba, y la ventana al frente o una pestaña nueva.
+    Mientras tanto consulta origin (el `update --check`) y, si hay commits nuevos de AgentNav, lo avisa dentro de Herdr."""
+    check = start_update_check()  # git fetch en paralelo con el arranque: no demora la ventana
     if ensure_server(say):
         restore_projects(load_projects(), say)
     label_agents(say)  # los paneles idle no tienen eventos: la etiqueta se repone acá
     if inside_herdr():
         say("ya estás dentro de Herdr.")
-        return 0
-    if focus_herdr_window():
+    elif focus_herdr_window():
         say("ventana de Herdr al frente.")
-        return 0
-    attach(say, force=True)
+    else:
+        attach(say, force=True)
+    notify_update_available(check, say)
     return 0
+
+
+def start_update_check(fetch_timeout=15):
+    """Lanza en un hilo el `update --check` (repo_status con fetch). Devuelve el hilo con .result = estado | AgentNavError."""
+    import threading
+
+    def work():
+        try:
+            t.result = repo_status(fetch_timeout=fetch_timeout)
+        except AgentNavError as e:
+            t.result = e
+
+    t = threading.Thread(target=work, name="agentnav-update-check", daemon=True)
+    t.result = None
+    t.start()
+    return t
+
+
+def update_notice(st):
+    """(título, cuerpo) del aviso de AgentNav desactualizado, o None si no hay nada que avisar: al día, sin red (fetch_error),
+    sin upstream, o el estado no es un dict (AgentNavError: no es un clon, no hay git...). El acceso directo corre sin
+    consola, así que el aviso tiene que valer por sí solo."""
+    if not isinstance(st, dict) or st.get("fetch_error") or not st.get("upstream") or not st.get("behind"):
+        return None
+    n = st["behind"]
+    title = f"AgentNav: {n} commit{'s' if n != 1 else ''} nuevo{'s' if n != 1 else ''} en {st['upstream']}"
+    body = "agentnav update los instala (git pull y re-copia hooks, arranque y config de Herdr)"
+    if st.get("dirty"):
+        body = f"hay cambios locales sin commitear en {HOME}; commiteá o descartá y después agentnav update"
+    elif st.get("ahead"):
+        body = f"{HOME} tiene {st['ahead']} commit(s) sin pushear; git push (o rebase a mano) y después agentnav update"
+    return title, body
+
+
+def notify_update_available(check, say=print, wait=20.0):
+    """Espera al hilo de start_update_check (como mucho `wait` s: la ventana ya está arriba) y, si hay commits nuevos,
+    lo dice y muestra una notificación de Herdr. Sin red o sin clon no molesta: queda para `doctor`."""
+    check.join(timeout=wait)
+    st = check.result
+    if isinstance(st, AgentNavError):
+        say(f"no pude comparar AgentNav con origin: {st}")
+        return False
+    if st is None:
+        say("la consulta a origin no terminó a tiempo; agentnav update --check la repite")
+        return False
+    if st.get("fetch_error"):
+        say(f"no pude consultar origin: {st['fetch_error']}")
+        return False
+    notice = update_notice(st)
+    if not notice:
+        say(f"AgentNav al día con {st.get('upstream') or 'origin'} ({st.get('sha')})")
+        return False
+    title, body = notice
+    say(f"{title}: {body}")
+    try:
+        run("notification", "show", title, "--body", body, "--sound", "none", timeout=10)
+    except AgentNavError as e:
+        say(f"no pude mostrar la notificación en Herdr: {e}")
+    return True
 
 
 def attach(say=print, force=False):

@@ -32,7 +32,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
 
-**Actualizar:** `C:\AgentNav` es un clon de `https://github.com/pablitotester/AgentNav`; `agentnav update` trae lo nuevo (`git pull --ff-only`, no toca nada si hay cambios locales sin commitear) y vuelve a copiar a su lugar los hooks, el `.vbs` de Inicio y el `config.toml` de Herdr (con respaldo `config.toml.bak-fecha` y recarga del servidor). `doctor` avisa cuando origin tiene commits nuevos.
+**Actualizar:** `C:\AgentNav` es un clon de `https://github.com/pablitotester/AgentNav`; `agentnav update` trae lo nuevo (`git pull --ff-only`, no toca nada si hay cambios locales sin commitear) y vuelve a copiar a su lugar los hooks, el `.vbs` de Inicio y el `config.toml` de Herdr (con respaldo `config.toml.bak-fecha` y recarga del servidor). `doctor` avisa cuando origin tiene commits nuevos, y `agentnav app` (el acceso directo) hace el mismo chequeo al arrancar, en paralelo con el servidor, y si hay algo nuevo lo muestra como notificación dentro de Herdr (`herdr notification show`); sin red o sin clon no molesta.
 
 ## Uso
 
@@ -53,7 +53,7 @@ agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b
 agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
 agentnav ntfy-test           aviso de prueba al teléfono
 agentnav labels              pone ya la etiqueta "<agente> · <tarea>" a todos los paneles con agente (`app` lo hace solo al arrancar)
-agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
+agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva; de paso `update --check` y aviso en Herdr si origin tiene commits nuevos
 ```
 
 Temas: `ctrl+b`, soltar, `alt+t` abre el selector dentro de Herdr (flechas, Enter aplica y se ve al instante). La lista propia de Herdr (`ctrl+b s`) está compilada en el programa y no admite entradas nuevas; para tenerlas ahí hay un **Herdr propio** (ver abajo) y, con ése instalado, el selector escribe el nombre del tema como cualquier otro, sin bloque `custom`. Desde consola: `agentnav theme` lista y `agentnav theme matrix` aplica. Las paletas propias viven en `config\themes.json` (cs16 = consola de Counter-Strike 1.6, matrix, procomm = Procomm Plus de DOS) y se escriben como `[theme.custom]` sobre el tema base en el `config.toml`, con recarga inmediata. Pintan la interfaz de Herdr (barra lateral, pestañas, bordes, popup); el texto dentro de cada panel lo pinta el programa que corre ahí.

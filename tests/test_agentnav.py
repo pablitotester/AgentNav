@@ -304,5 +304,55 @@ class EtiquetaTodos(unittest.TestCase):
                                                   ("w1:p2", "--source", "agentnav", "--title", "claude · Mapa nuevo")])
 
 
+class AvisoDeUpdate(unittest.TestCase):
+    AL_DIA = {"sha": "abc1234", "branch": "main", "upstream": "origin/main", "dirty": False, "ahead": 0, "behind": 0,
+              "fetch_error": None}
+
+    def test_sin_aviso_al_dia_sin_red_sin_upstream_o_con_error(self):
+        self.assertIsNone(an.update_notice(self.AL_DIA))
+        self.assertIsNone(an.update_notice(dict(self.AL_DIA, behind=3, fetch_error="fatal: sin red")))
+        self.assertIsNone(an.update_notice(dict(self.AL_DIA, behind=3, upstream=None)))
+        self.assertIsNone(an.update_notice(an.AgentNavError("no es un clon")))
+        self.assertIsNone(an.update_notice(None))
+
+    def test_aviso_cuenta_commits_y_dice_que_hacer(self):
+        title, body = an.update_notice(dict(self.AL_DIA, behind=1))
+        self.assertEqual(title, "AgentNav: 1 commit nuevo en origin/main")
+        self.assertIn("agentnav update", body)
+        title, body = an.update_notice(dict(self.AL_DIA, behind=4))
+        self.assertEqual(title, "AgentNav: 4 commits nuevos en origin/main")
+
+    def test_aviso_con_cambios_locales_o_commits_sin_pushear(self):
+        _, body = an.update_notice(dict(self.AL_DIA, behind=2, dirty=True))
+        self.assertIn("sin commitear", body)
+        _, body = an.update_notice(dict(self.AL_DIA, behind=2, ahead=1))
+        self.assertIn("sin pushear", body)
+
+    def test_notify_muestra_notificacion_de_herdr_solo_si_hay_nuevos(self):
+        calls, said = [], []
+        orig_run = an.run
+        an.run = lambda *a, **k: calls.append(a) or (0, "", "")
+
+        class Hilo:
+            def __init__(self, result):
+                self.result = result
+
+            def join(self, timeout=None):
+                pass
+
+        try:
+            self.assertFalse(an.notify_update_available(Hilo(self.AL_DIA), say=said.append))
+            self.assertFalse(an.notify_update_available(Hilo(an.AgentNavError("sin git")), say=said.append))
+            self.assertFalse(an.notify_update_available(Hilo(None), say=said.append))
+            self.assertEqual(calls, [])
+            self.assertTrue(an.notify_update_available(Hilo(dict(self.AL_DIA, behind=2)), say=said.append))
+        finally:
+            an.run = orig_run
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:3], ("notification", "show", "AgentNav: 2 commits nuevos en origin/main"))
+        self.assertIn("--body", calls[0])
+        self.assertTrue(any("al día" in s for s in said))
+
+
 if __name__ == "__main__":
     unittest.main()

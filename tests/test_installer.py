@@ -2,7 +2,9 @@
 
     py -X utf8 -m unittest discover -s tests
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -15,6 +17,12 @@ cfg = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cfg)
 
 HOOKS = r"C:\Users\amigo\.claude\hooks"
+
+
+def _main(argv):
+    """configurar.main sin su salida por pantalla (informa al usuario del instalador, no al test)."""
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return cfg.main(argv)
 
 
 def _commands(settings, event):
@@ -104,20 +112,20 @@ class MainConArchivos(unittest.TestCase):
             p = os.path.join(d, "settings.json")
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"permissions": {"allow": ["Bash(ñ)"]}}, f)
-            self.assertEqual(cfg.main(["claude-hooks", p, HOOKS]), 0)
+            self.assertEqual(_main(["claude-hooks", p, HOOKS]), 0)
             with open(p, encoding="utf-8") as f:
                 data = json.load(f)
             self.assertEqual(data["permissions"]["allow"], ["Bash(ñ)"])
             self.assertEqual(len(data["hooks"]), 5)
             self.assertTrue(any(n.startswith("settings.json.bak-agentnav-") for n in os.listdir(d)))
-            self.assertEqual(cfg.main(["claude-hooks", p, HOOKS]), 0)
+            self.assertEqual(_main(["claude-hooks", p, HOOKS]), 0)
 
     def test_json_invalido_no_se_toca(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "settings.json")
             with open(p, "w", encoding="utf-8") as f:
                 f.write("{ roto")
-            self.assertEqual(cfg.main(["claude-hooks", p, HOOKS]), 2)
+            self.assertEqual(_main(["claude-hooks", p, HOOKS]), 2)
             with open(p, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "{ roto")
 
@@ -127,12 +135,12 @@ class MainConArchivos(unittest.TestCase):
             with open(ex, "w", encoding="utf-8") as f:
                 json.dump(SettingsDeAgentNav.EX, f)
             p = os.path.join(d, "settings.json")
-            self.assertEqual(cfg.main(["agentnav-settings", p, ex, "-"]), 0)
+            self.assertEqual(_main(["agentnav-settings", p, ex, "-"]), 0)
             with open(p, encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["herdr_fork"]["repo"], "")
 
     def test_sin_argumentos(self):
-        self.assertEqual(cfg.main([]), 1)
+        self.assertEqual(_main([]), 1)
 
 
 if __name__ == "__main__":

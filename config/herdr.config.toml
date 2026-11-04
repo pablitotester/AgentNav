@@ -19,8 +19,8 @@ new_cwd = "C:\\"
 # La ayuda va en F1. Si ctrl+b molesta porque Claude Code lo usa para mandar tareas a segundo plano, cambiar a prefix = "f12".
 prefix = "ctrl+b"
 help = "prefix+f1"
-# 30/10: ctrl+b c = pestaña de AgentNav: misma carpeta que el panel actual y el mismo agente
-# (si venías en un Claude, otro Claude con conversación nueva). El "+" de la barra hace lo mismo vía el plugin
+# 30/10: ctrl+b c = pestaña de AgentNav: un shell en la misma carpeta que el panel actual. 4/11: ya no arranca
+# otro Claude ahí (eso queda en `agentnav tab agent`, sin tecla). El "+" de la barra hace lo mismo vía el plugin
 # C:\AgentNav\plugin (gancho tab.created → agentnav adopt). La pestaña pelada (shell en new_cwd) queda en ctrl+b shift+c,
 # con etiqueta "shell" para que el plugin no la adopte (adopta sólo las de etiqueta numérica); la tecla nativa de Herdr se desata.
 new_tab = ""

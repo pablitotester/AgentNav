@@ -42,8 +42,8 @@ agentnav list                proyectos, cuáles están abiertos, rama y cambios,
 agentnav open <nombre>       abre el proyecto como espacio con sus agentes, o lo enfoca y repone los que falten
 agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su Claude
 agentnav close <nombre>      cierra el espacio; a los Claude les manda /exit antes
-agentnav tab [shell]         pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente (ctrl+b c); con shell, la pelada (ctrl+b shift+c)
-agentnav adopt               lo corre el plugin de Herdr cuando nace una pestaña (el "+") o un panel (split): lo lleva al proyecto y arranca el agente
+agentnav tab [shell|agent]   pestaña nueva en el espacio actual: un shell en la misma carpeta que el panel de origen, sin agente (ctrl+b c); con shell, la pelada (ctrl+b shift+c); con agent, además el mismo agente
+agentnav adopt               lo corre el plugin de Herdr cuando nace una pestaña (el "+") o un panel (split): lo lleva a la carpeta del proyecto, sin arrancar agente
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
@@ -61,11 +61,11 @@ Dentro de Herdr: `ctrl+b F1` muestra todas las teclas (en Herdr es `?`, que el t
 
 Si tu prompt de shell es decorado (oh-my-posh, starship), poné en `settings.json` un `prompt_regex` que lo reconozca (el de fábrica entiende pwsh, cmd y bash); si no, `adopt` y `close` esperan 15 s y 5 s de más.
 
-`ctrl+b c` y el `+` de la barra abren la pestaña nueva en la carpeta del panel actual y con el mismo agente: si venías en un Claude, arranca otro Claude ahí (conversación nueva, nunca `--continue`). Si el panel era un shell, toma el último agente vivo del espacio; si no hay, el agente registrado del proyecto; si tampoco, un shell. La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
+`ctrl+b c` y el `+` de la barra abren la pestaña nueva con un shell en la carpeta del panel actual (o en la del proyecto, si el panel estaba afuera), con el nombre de esa carpeta como etiqueta. No arrancan ningún agente: el Claude lo lanzás vos cuando lo querés (hasta el 4/11 abrían otro Claude ahí; `agentnav tab agent` todavía lo hace, si querés atarlo a una tecla). La pestaña pelada (shell en `new_cwd`) quedó en `ctrl+b shift+c`.
 
-El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created`; `adopt` toma sólo las pestañas con la etiqueta numérica de Herdr (las del `+`), espera el prompt, cambia a la carpeta con la orden del shell que atiende el panel (`Set-Location` en pwsh, `cd /d` en cmd, `cd` en bash; lo mira con `pane process-info`) y arranca el agente en ese mismo panel. Las que ya traen nombre (las de `tab`, `open`, o `shell`) se dejan como están, y mientras `open` arma un espacio la adopción queda en pausa. `doctor` avisa si el plugin no está enlazado.
+El `+` pasa por el plugin local `plugin\herdr-plugin.toml` (enlazado con `herdr plugin link C:\AgentNav\plugin`): Herdr dispara `agentnav adopt` en cada `tab.created`; `adopt` toma sólo las pestañas con la etiqueta numérica de Herdr (las del `+`), las renombra con el nombre de la carpeta, espera el prompt y cambia a la carpeta con la orden del shell que atiende el panel (`Set-Location` en pwsh, `cd /d` en cmd, `cd` en bash; lo mira con `pane process-info`). Ahí termina: el panel queda como shell, sin agente. Las que ya traen nombre (las de `tab`, `open`, o `shell`) se dejan como están, y mientras `open` arma un espacio la adopción queda en pausa. `doctor` avisa si el plugin no está enlazado.
 
-Los splits (`ctrl+b v`, `ctrl+b -` o el menú del panel) pasan por el mismo gancho con `pane.created`: un panel que nace en el `new_cwd` fijo (C:\) dentro de una pestaña que ya tenía otros se lleva a la carpeta del proyecto y arranca el mismo agente que el hermano más reciente de esa pestaña. Un panel creado con `--cwd` propio, o el panel raíz de una pestaña nueva (de ése se ocupa `tab.created`), se deja como está.
+Los splits (`ctrl+b v`, `ctrl+b -` o el menú del panel) pasan por el mismo gancho con `pane.created`: un panel que nace en el `new_cwd` fijo (C:\) dentro de una pestaña que ya tenía otros se lleva a la carpeta donde trabaja el hermano más reciente de esa pestaña (o a la del proyecto), como shell y sin agente. Un panel creado con `--cwd` propio, o el panel raíz de una pestaña nueva (de ése se ocupa `tab.created`), se deja como está.
 
 ## projects.json
 

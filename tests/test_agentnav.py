@@ -95,6 +95,13 @@ class ClaudeCode(unittest.TestCase):
             self.assertEqual(an._tab_path(os.path.join(tmp, "no"), {"path": os.path.join(tmp, "no")}),
                              an.new_project_base())                 # nada existe: donde nacen los proyectos
 
+    def test_tab_label(self):
+        self.assertEqual(an._tab_label("C:\\Proyectos\\Nevatars\\"), "Nevatars")
+        self.assertEqual(an._tab_label("C:\\Proyectos\\Nevatars/src"), "src")
+        self.assertEqual(an._tab_label("C:\\"), "shell")          # raíz: no hay nombre
+        self.assertEqual(an._tab_label("C:\\obra\\2024"), "shell")  # numérica: al nacer la adoptaría el plugin
+        self.assertEqual(an._tab_label("C:\\obra\\v2"), "v2")
+
 
 class Diario(unittest.TestCase):
     def setUp(self):

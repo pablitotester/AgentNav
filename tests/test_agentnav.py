@@ -167,6 +167,24 @@ class Herdr(unittest.TestCase):
         self.assertGreater(an._ver_tuple("0.10.0"), an._ver_tuple("0.9.5"))
         self.assertEqual(an._ver_tuple(None), ())
 
+    def test_parse_sha256_file(self):
+        h = "a" * 63 + "F"
+        self.assertEqual(an.parse_sha256_file(f"{h}  herdr.exe\n"), h.lower())
+        self.assertEqual(an.parse_sha256_file(h.upper()), h.lower())
+        self.assertEqual(an.parse_sha256_file(f"\ufeff {h} *herdr.exe"), h.lower())
+        for bad in ("", "abc", "x" * 64, f"herdr.exe {h}"):
+            with self.assertRaises(an.AgentNavError, msg=repr(bad)):
+                an.parse_sha256_file(bad)
+
+    def test_fork_sync_state(self):
+        a, b = "1" * 64, "2" * 64
+        self.assertEqual(an.fork_sync_state("0.9.5", a, "0.9.5", a), "al_dia")
+        self.assertEqual(an.fork_sync_state("0.9.5", a, "0.9.5", a.upper()), "al_dia")
+        self.assertEqual(an.fork_sync_state("0.9.5", a, "0.9.5", b), "rebuild")
+        self.assertEqual(an.fork_sync_state("0.9.5", a, "0.10.0", b), "version_nueva")
+        self.assertEqual(an.fork_sync_state("0.10.0", a, "0.9.5", b), "fork_atrasado")
+        self.assertEqual(an.fork_sync_state("", "", "0.9.5", b), "version_nueva")  # sin exe instalado: hay que bajarlo
+
     def test_find_ws_y_agent_present(self):
         snap = {"workspaces": [{"workspace_id": "w1", "label": "MiniZelda"}, {"workspace_id": "w2"}]}
         self.assertEqual(an.find_ws(snap, "minizelda")["workspace_id"], "w1")

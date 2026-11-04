@@ -1604,6 +1604,14 @@ def _http_json(url, timeout=15):
         return json.load(r)
 
 
+def _http_text(url, timeout=15, limit=1 << 16):
+    """Cuerpo de una URL como texto (hasta `limit` bytes), para archivos chicos como el .sha256."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "AgentNav"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(limit).decode("utf-8", "replace")
+
+
 def _http_download(url, dest, timeout=120):
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "AgentNav"})
@@ -1625,12 +1633,64 @@ def fork_latest_release(repo):
             "assets": {a["name"]: a["browser_download_url"] for a in r.get("assets") or []}}
 
 
+def parse_sha256_file(text):
+    """Primer token de un .sha256 ("hash  nombre" o el hash solo), en minúsculas. AgentNavError si no son 64 hex."""
+    tok = (str(text or "").lstrip("\ufeff").split() or [""])[0].lower()  # PowerShell 5 escribe con BOM
+    if not re.fullmatch(r"[0-9a-f]{64}", tok):
+        raise AgentNavError(f"sha256 inválido: {tok[:24]!r}")
+    return tok
+
+
+def fork_release_sha(rel):
+    """SHA-256 del herdr.exe que publica el release (asset herdr.exe.sha256), ya validado."""
+    url = (rel.get("assets") or {}).get("herdr.exe.sha256")
+    if not url:
+        raise AgentNavError(f"al release {rel['tag']} le falta herdr.exe.sha256 (¿el workflow sigue corriendo?)")
+    try:
+        text = _http_text(url, timeout=20)
+    except Exception as e:
+        raise AgentNavError(f"no pude bajar el sha256 de {rel['tag']}: {e}")
+    return parse_sha256_file(text)
+
+
+def fork_sync_state(installed_version, installed_sha, release_version, release_sha):
+    """Qué hay entre el exe instalado y el último build del fork. Manda el SHA-256, no el tag: el workflow puede republicar
+    el mismo agentnav-vX.Y.Z con otro parche de temas.
+      "al_dia"         mismo exe que el release
+      "version_nueva"  el fork va por una versión más nueva que la instalada
+      "rebuild"        misma versión, otro exe: republicaron el tag
+      "fork_atrasado"  lo instalado es más nuevo que el último build del fork"""
+    have, want = str(installed_sha or "").lower(), str(release_sha or "").lower()
+    if have and have == want:
+        return "al_dia"
+    iv, rv = _ver_tuple(installed_version), _ver_tuple(release_version)
+    if rv > iv:
+        return "version_nueva"
+    if rv < iv:
+        return "fork_atrasado"
+    return "rebuild"
+
+
+HERDR_UPDATE_TASK = "AgentNav Herdr update"
+
+
+def herdr_update_task_registered(name=HERDR_UPDATE_TASK):
+    """True/False según exista la tarea programada que deja herdr-fork/install.ps1; None si schtasks no contestó."""
+    try:
+        cp = subprocess.run(["schtasks", "/query", "/tn", name], capture_output=True, timeout=10,
+                            creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return cp.returncode == 0
+
+
 def herdr_build_marker_path():
     return os.path.join(herdr_release_dir(), "agentnav-build.json")
 
 
-def herdr_is_ours():
-    """(True si el herdr.exe instalado es el build del fork, False si es el oficial, None si no se sabe; detalle)."""
+def herdr_is_ours(sha=None):
+    """(True si el herdr.exe instalado es el build del fork, False si es el oficial, None si no se sabe; detalle).
+    `sha`: SHA-256 del exe si ya se calculó, para no hashearlo dos veces."""
     exe = os.path.join(herdr_release_dir(), "herdr.exe")
     marker = _read_json_file(herdr_build_marker_path(), "agentnav-build.json")
     if not os.path.isfile(exe):
@@ -1638,7 +1698,7 @@ def herdr_is_ours():
     if not marker:
         return False, "sin marcador: herdr.exe oficial"
     try:
-        same = file_sha256(exe) == str(marker.get("sha256") or "").lower()
+        same = (sha or file_sha256(exe)) == str(marker.get("sha256") or "").lower()
     except OSError as e:
         return None, str(e)
     return (True, f"build del fork {marker.get('tag')}") if same else (False, f"herdr.exe no coincide con el marcador {marker.get('tag')}: lo pisó herdr update")
@@ -1708,42 +1768,41 @@ def cmd_herdr_sync(argv, say=print):
             raise AgentNavError(f"tras herdr update quedó {inst} y el fork tiene {rel['version']}; probá de nuevo más tarde")
     elif _ver_tuple(rel["version"]) < _ver_tuple(inst):
         raise AgentNavError(f"tu Herdr ({inst}) es más nuevo que el último build del fork ({rel['version']}): el workflow corre a diario a las 06:17 UTC, o lanzalo a mano en GitHub → Actions")
-    # Mismo tag ya instalado: nada que hacer. Cada compilación da un exe distinto con el mismo código (no son
-    # reproducibles), así que el hash sólo decide con --force.
-    ours, detail = herdr_is_ours()
-    marker_now = _read_json_file(herdr_build_marker_path(), "agentnav-build.json") or {}
-    if ours and marker_now.get("tag") == rel["tag"] and "--force" not in argv:
-        say(f"{rel['tag']} ya está instalado ({detail}); --force reinstala el último exe publicado.")
+    # Misma versión: decide el SHA-256 del exe instalado contra el publicado. El workflow puede republicar el mismo tag
+    # con otro parche de temas, así que comparar tags no alcanza; con el mismo exe, sólo --force reinstala.
+    exe = os.path.join(herdr_release_dir(), "herdr.exe")
+    have = file_sha256(exe) if os.path.isfile(exe) else ""
+    want = fork_release_sha(rel)
+    state = fork_sync_state(inst, have, rel["version"], want)
+    if state == "al_dia" and "--force" not in argv:
+        marker_now = _read_json_file(herdr_build_marker_path(), "agentnav-build.json") or {}
+        if str(marker_now.get("sha256") or "").lower() != have:  # exe del fork sin marcador (lo puso el instalador oficial)
+            with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
+                json.dump({"tag": rel["tag"], "sha256": have, "repo": repo, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}, f, indent=2)
+            say("marcador agentnav-build.json actualizado")
+        say(f"ya está instalado {rel['tag']} (sha {have[:8]}); --force para reinstalar")
         return 0
+    if state == "rebuild":
+        say(f"el fork republicó {rel['tag']} con otro build (sha {want[:8]}, instalado {have[:8] or '-'}): lo instalo")
     # Descarga y verificación
     dl = os.path.join(STATE_DIR, "herdr-download")
     os.makedirs(dl, exist_ok=True)
-    new_exe, sha_file = os.path.join(dl, "herdr.exe"), os.path.join(dl, "herdr.exe.sha256")
+    new_exe = os.path.join(dl, "herdr.exe")
     say(f"bajando {rel['tag']}…")
     try:
-        _http_download(rel["assets"]["herdr.exe.sha256"], sha_file, timeout=60)
         _http_download(rel["assets"]["herdr.exe"], new_exe, timeout=600)
     except Exception as e:
         raise AgentNavError(f"descarga fallida: {e}")
-    with open(sha_file, encoding="utf-8") as f:
-        want = (f.read().split() or [""])[0].lower()
     got = file_sha256(new_exe)
-    if not re.fullmatch(r"[0-9a-f]{64}", want) or got != want:
+    if got != want:  # want: el sha256 que publica el release, ya bajado y validado arriba
         raise AgentNavError(f"SHA-256 no coincide (esperado {want[:12]}…, bajado {got[:12]}…); no instalo nada")
-    exe = os.path.join(herdr_release_dir(), "herdr.exe")
     marker = {"tag": rel["tag"], "sha256": got, "repo": repo, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    if os.path.isfile(exe) and file_sha256(exe) == got:
-        with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
-            json.dump(marker, f, indent=2)
-        say(f"{rel['tag']} ya estaba instalado.")
-        shutil.rmtree(dl, ignore_errors=True)
-        return 0
     # Nadie trabajando
     snap = _snapshot_or_none()
     busy = [a.get("name") or a.get("pane_id") for a in (snap or {}).get("agents", []) if a.get("agent_status") in ("working", "blocked")]
     if busy and "--force" not in argv:
         raise AgentNavError(f"hay agentes ocupados ({', '.join(map(str, busy))}); reinstalar reinicia todos los Claude. Cuando terminen, o agentnav herdr-sync --force")
-    ours, _ = herdr_is_ours()
+    ours, _ = herdr_is_ours(have)
     official = exe + ".oficial"
     if ours is False and not os.path.isfile(official):
         shutil.copy2(exe, official)
@@ -2130,26 +2189,49 @@ def cmd_doctor():
     # Herdr propio (fork con temas)
     repo = fork_repo()
     if repo:
-        ours, detail = herdr_is_ours()
+        exe = os.path.join(herdr_release_dir(), "herdr.exe")
+        try:
+            have = file_sha256(exe) if os.path.isfile(exe) else ""  # un solo hash para el marcador y para el release
+        except OSError:
+            have = ""
+        ours, detail = herdr_is_ours(have or None)
+        rel, want, state, net_error = None, "", "", None
+        try:
+            rel = fork_latest_release(repo)
+            inst = installed_herdr_version()
+            if rel:
+                want = fork_release_sha(rel)
+                state = fork_sync_state(inst, have, rel["version"], want)
+        except AgentNavError as e:
+            net_error = str(e)
         if ours:
             check(True, f"Herdr con los temas de AgentNav: {detail}")
+        elif state == "al_dia":  # el exe es el del fork pero lo puso el instalador oficial: no hay marcador (o es viejo)
+            check(None, "exe del fork sin marcador agentnav-build.json: agentnav herdr-sync lo anota")
         elif ours is False and "pisó" in detail:
             check(False, f"{detail}: agentnav herdr-sync lo vuelve a poner")
         else:
             check(None, f"Herdr oficial ({detail}); agentnav herdr-sync instala el del fork {repo}")
-        try:
-            rel = fork_latest_release(repo)
-            inst = installed_herdr_version()
-            if not rel:
-                check(None, f"el fork {repo} no publicó releases todavía")
-            elif _ver_tuple(rel["version"]) > _ver_tuple(inst):
-                check(None, f"el fork tiene {rel['tag']} y está instalado {inst}: agentnav herdr-sync")
-            elif _ver_tuple(rel["version"]) < _ver_tuple(inst):
-                check(None, f"Herdr {inst} es más nuevo que el último build del fork ({rel['tag']}); el workflow lo alcanza en su próxima corrida")
-            else:
-                check(True, f"fork {repo}: release {rel['tag']} al día con la versión instalada")
-        except AgentNavError as e:
-            check(None, str(e))
+        if net_error:
+            check(None, net_error)
+        elif not rel:
+            check(None, f"el fork {repo} no publicó releases todavía")
+        elif state == "al_dia":
+            check(True, f"fork {repo}: {rel['tag']} al día (sha {want[:8]})")
+        elif state == "version_nueva":
+            check(None, f"el fork tiene {rel['tag']} y está instalado {inst}: agentnav herdr-sync")
+        elif state == "rebuild":
+            check(None, f"el fork republicó {rel['tag']} con otro build (sha {want[:8]}, instalado {have[:8] or '-'}): agentnav herdr-sync")
+        else:
+            check(None, f"Herdr {inst} es más nuevo que el último build del fork ({rel['tag']}); el workflow lo alcanza en su próxima corrida")
+        task = herdr_update_task_registered()
+        if task:
+            check(True, f"tarea '{HERDR_UPDATE_TASK}' registrada (chequeo automático de Herdr)")
+        elif task is None:
+            check(None, f"no pude consultar schtasks por la tarea '{HERDR_UPDATE_TASK}'")
+        else:
+            check(None, f"sin la tarea '{HERDR_UPDATE_TASK}' (chequeo automático): la crea {os.path.join(HOME, 'herdr-fork', 'install.ps1')} -NoLaunch, "
+                        "que además reinstala el build del fork y puede cerrar Herdr; correrlo sin agentes trabajando")
 
     bad = 0
     for ok, text in results:

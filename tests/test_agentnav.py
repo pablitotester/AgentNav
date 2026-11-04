@@ -220,5 +220,22 @@ class Temas(unittest.TestCase):
         self.assertNotIn("[theme.custom]", an.render_theme_block("matrix", {}, "matrix", mine))
 
 
+class EtiquetaPanel(unittest.TestCase):
+    def test_pane_title_arma_la_orden_y_nunca_falla(self):
+        calls = []
+        orig = an.run
+        an.run = lambda *a, **k: calls.append(a) or (0, "", "")
+        try:
+            an.pane_title("w1:p2", "qa · arreglar el login")
+            an.pane_title("w1:p2", "")
+            self.assertEqual(calls[0], ("pane", "report-metadata", "w1:p2", "--source", "agentnav", "--title", "qa · arreglar el login"))
+            self.assertEqual(calls[1], ("pane", "report-metadata", "w1:p2", "--source", "agentnav", "--clear-title"))
+            self.assertNotIn("--title=", " ".join(calls[0]))  # Herdr no acepta esa forma
+            an.run = lambda *a, **k: (_ for _ in ()).throw(OSError("herdr caído"))
+            an.pane_title("w1:p2", "x")  # se traga el error: la etiqueta nunca frena un arranque
+        finally:
+            an.run = orig
+
+
 if __name__ == "__main__":
     unittest.main()

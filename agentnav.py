@@ -774,6 +774,7 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
         if args:
             cli += ["--", *args]
         api(*cli, timeout=timeout_ms / 1000 + 10)
+        pane_title(pane, a["name"])
         say(f"  {a['name']}: listo.")
         return True
     except AgentNavError as e:
@@ -782,6 +783,17 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
         else:
             say(f"  {a['name']}: no arrancó ({e})")
         return False
+
+
+def pane_title(pane, title):
+    """Etiqueta del borde superior del panel (metadata de Herdr). El hook la completa con la tarea en cada evento;
+    acá va el nombre solo para que el panel no quede sin nombre hasta el primer pedido, y "" la borra (un panel que
+    pasa a ser shell no hereda la etiqueta del agente que tuvo). Nunca falla por esto."""
+    try:
+        what = ["--title", title] if title else ["--clear-title"]  # Herdr no acepta la forma --title=texto
+        run("pane", "report-metadata", pane, "--source", "agentnav", *what, timeout=10)
+    except Exception:
+        pass
 
 
 # Prompt de pwsh / Windows PowerShell, o de un shell tipo bash, con espacio o salto de línea finales. Un prompt
@@ -864,6 +876,7 @@ def _start_shell(a, pane, say):
         api("pane", "rename", pane, a["name"])
     except AgentNavError:
         pass
+    pane_title(pane, "")  # si el panel tuvo un agente, su etiqueta no se queda
     if not a["command"]:
         say(f"  {a['name']}: shell en {pane}.")
         return True

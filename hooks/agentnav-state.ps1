@@ -6,6 +6,7 @@
 #   unblock  PostToolUse      → si había marca "blocked", vuelve a working (agentnav-unblock.cmd sólo lo lanza si existe
 #                               la marca de ESA sesión, por CLAUDE_CODE_SESSION_ID; blocked.flag es el respaldo sin env)
 #   stop     Stop             → idle                                 + diario + aviso ntfy si el turno fue largo
+# En prompt, stop y notify también pone la etiqueta del panel ("<agente> · <tarea>", ver Pane-Label); SessionEnd la borra.
 #   end      SessionEnd       → release-agent                        + limpia marcas (no en /clear: el panel sigue vivo)
 # Siempre sale con 0 y nunca escribe en stdout: un hook que falla no debe molestar a Claude.
 # Archivo guardado como UTF-8 CON BOM: PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252 y rompe los acentos.
@@ -192,8 +193,9 @@ function Notify-Phone([string]$kind, [string]$title, [string]$body, [int]$elapse
         return " ntfy=ok"
     } catch { return " ntfy=ERR " + ($_.Exception.Message -replace '\s+', ' ') }
 }
-function Report-Herdr([string[]]$cli) {
+function Invoke-Herdr([string[]]$cli) {
     # herdr con tope de 4 s: si el servidor está colgado, UserPromptSubmit no puede esperar los 10 s del hook.
+    # Devuelve stdout+stderr crudos, o $null si venció el plazo.
     $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $herdr; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
@@ -210,13 +212,43 @@ function Report-Herdr([string[]]$cli) {
     # Leer en async costaría ~35 ms más (arranque del thread pool) en cada evento.
     if (-not $p.WaitForExit(4000)) {
         try { $p.Kill() } catch { }
-        return "TIMEOUT herdr"  # sin leer los pipes: un hijo del proceso matado podría tenerlos abiertos
+        return $null  # sin leer los pipes: un hijo del proceso matado podría tenerlos abiertos
     }
-    $r = (($p.StandardOutput.ReadToEnd() + " " + $p.StandardError.ReadToEnd()) -replace '\s+', ' ').Trim()
+    return $p.StandardOutput.ReadToEnd() + " " + $p.StandardError.ReadToEnd()
+}
+function Report-Herdr([string[]]$cli) {
+    $raw = Invoke-Herdr $cli
+    if ($null -eq $raw) { return "TIMEOUT herdr" }
+    $r = ($raw -replace '\s+', ' ').Trim()
     if ($r -match '"code":"pane_not_found"') { return "pane ya cerrado (ok)" }
     if ($r -match '"type":"(ok|pane_info|agent_reported|agent_released)"') { return "" }
     if ($r.Length -gt 160) { $r = $r.Substring(0, 160) }
     return $r
+}
+# Etiqueta del panel: "<agente> · <tarea>" en el borde superior (pane report-metadata --title; Herdr la recorta si no
+# entra). El nombre es el que Herdr le dio al agente, el mismo de la barra lateral; la tarea es el título de terminal
+# que Claude Code escribe solo a medida que avanza la conversación (terminal_title_stripped) y, mientras siga en
+# "Claude Code" (conversación nueva), el principio del último pedido. Una llamada a `agent list` (~50 ms) y una al
+# reporte; si Herdr todavía no detectó el agente, no se pone nada y el próximo evento lo hace.
+function Pane-Label([string]$hint) {
+    try {
+        $raw = Invoke-Herdr @("agent", "list")
+        if ([string]::IsNullOrWhiteSpace($raw)) { return "" }
+        $me = ($raw | ConvertFrom-Json).result.agents | Where-Object { $_.pane_id -eq $env:HERDR_PANE_ID } | Select-Object -First 1
+        if ($null -eq $me) { return "" }  # Herdr no ve agente en este panel (todavía, o ya no): no se toca nada
+        $name = [string]$me.name
+        if (-not $name) { $name = [string]$me.agent }
+        $task = [string]$me.terminal_title_stripped
+        if (-not $task -or $task -eq "Claude Code") { $task = $hint }
+        # El borde se ve en cualquier captura: un pedido que traiga algo con pinta de clave no va.
+        if ($task -match '(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])') { $task = "" }
+        $task = Clean-Message $task 60
+        $title = if ($task) { "$name " + [char]0xB7 + " $task" } else { $name }
+        # Herdr no entiende "--title=texto"; el título empieza por el nombre del agente (letra), nunca por "-".
+        $r = Report-Herdr @("pane", "report-metadata", $env:HERDR_PANE_ID, "--source", "agentnav", "--title", $title)
+        if ($r) { return " label: $r" }
+        return ""
+    } catch { return (" label EXC " + $_.Exception.Message) -replace '\s+', ' ' }
 }
 
 $state = $null
@@ -224,11 +256,13 @@ $message = ""
 $extra = ""
 $release = $false
 $syncFlag = $false  # sólo cuando una marca blocked pudo aparecer o desaparecer: el prompt es el evento que espera el usuario
+$taskHint = Clean-Message (Read-Marker $workingFile) 60  # último pedido, por si Claude aún no puso título a la conversación
 switch ($Action) {
     "prompt" {
         $state = "working"
         $full = [string]$payload.prompt
         $message = Clean-Message $full
+        $taskHint = Clean-Message $full 60
         Write-Marker $workingFile (Clean-Message $full 300)  # sólo lo que se muestra: un prompt puede traer claves
         if ([IO.File]::Exists($blockedFile)) { Remove-Marker $blockedFile; $syncFlag = $true }
         Journal "prompt" $full
@@ -285,12 +319,16 @@ try {
     if ($Action -eq "end") {
         if ($release) {
             $result = Report-Herdr @("pane", "release-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", "claude", "--seq", "$seq")
+            $null = Report-Herdr @("pane", "report-metadata", $env:HERDR_PANE_ID, "--source", "agentnav", "--clear-title")
         }
     } else {
         $cli = @("pane", "report-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", "claude", "--state", $state, "--seq", "$seq")
         # Un solo token "--message=texto": si el prompt empieza con "-" (p. ej. "--help"), separado se perdería el reporte.
         if ($message) { $cli += @("--message=$message") }
         $result = Report-Herdr $cli
+        # La etiqueta va después del estado, no en unblock (corre por cada herramienta) y no si Herdr acaba de colgarse
+        # (otros 4 s de espera pasarían el tope de 10 s del hook).
+        if ($Action -ne "unblock" -and $result -ne "TIMEOUT herdr") { $extra += Pane-Label $taskHint }
     }
 } catch { $result = ("EXC " + $_.Exception.Message) -replace '\s+', ' ' }
 

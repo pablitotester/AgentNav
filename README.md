@@ -32,6 +32,8 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
 
+**Actualizar:** `C:\AgentNav` es un clon de `https://github.com/pablitotester/AgentNav`; `agentnav update` trae lo nuevo (`git pull --ff-only`, no toca nada si hay cambios locales sin commitear) y vuelve a copiar a su lugar los hooks, el `.vbs` de Inicio y el `config.toml` de Herdr (con respaldo `config.toml.bak-fecha` y recarga del servidor). `doctor` avisa cuando origin tiene commits nuevos.
+
 ## Uso
 
 ```
@@ -45,7 +47,8 @@ agentnav adopt               lo corre el plugin de Herdr cuando nace una pestañ
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code y no están registradas
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
-agentnav doctor              verifica Herdr, hooks, config, arranque, registro
+agentnav doctor              verifica Herdr, hooks, config, arranque, registro; avisa si origin tiene commits nuevos
+agentnav update [--check]    git pull --ff-only de origin y re-copia hooks, arranque y config de Herdr (con respaldo); --check sólo avisa (sale 10 si hay nuevos)
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
 agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
 agentnav ntfy-test           aviso de prueba al teléfono

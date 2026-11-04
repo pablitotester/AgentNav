@@ -16,7 +16,10 @@ Uso:
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
                            diario del día: qué le pediste a cada proyecto y cuánto trabajó
-  agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque)
+  agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque) y si origin tiene commits nuevos
+  agentnav update [--check]
+                           trae lo nuevo de origin (git pull --ff-only) y re-copia hooks, arranque y config de Herdr
+                           a su lugar (config con respaldo). --check sólo avisa: sale 0 al día, 10 si hay commits nuevos
   agentnav theme [nombre]  tema de colores de Herdr. Sin nombre: selector con flechas (es lo que corre el popup
                            ctrl+b alt+t; `theme list` sólo imprime). Con nombre lo aplica y recarga al instante.
                            Paletas propias en config\\themes.json: cs16, matrix, procomm; más los temas de Herdr
@@ -2027,7 +2030,7 @@ def cmd_ntfy_test():
     return 0
 
 
-# ---------------------------------------------------------------- doctor
+# ---------------------------------------------------------------- update (el repo frente a origin, y las copias instaladas)
 
 def _same_file(a, b):
     try:
@@ -2036,6 +2039,211 @@ def _same_file(a, b):
     except OSError:
         return False
 
+
+def installed_copies():
+    """[(origen en el repo, destino instalado)] de lo que vive fuera de C:\\AgentNav: doctor compara y update copia.
+
+    Para tests: si existe AGENTNAV_SYNC_ROOT, los destinos se arman bajo esa carpeta (<root>\\.claude\\hooks\\…,
+    <root>\\AppData\\Roaming\\…) en vez de USERPROFILE/APPDATA, así `update` no pisa la instalación viva."""
+    root = os.environ.get("AGENTNAV_SYNC_ROOT")
+    if root:
+        claude_home, appdata = os.path.join(root, ".claude"), os.path.join(root, "AppData", "Roaming")
+    else:
+        claude_home, appdata = CLAUDE_HOME, os.environ.get("APPDATA", "")
+    startup = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+    return [
+        (os.path.join(HOME, "hooks", "agentnav-state.ps1"), os.path.join(claude_home, "hooks", "agentnav-state.ps1")),
+        (os.path.join(HOME, "hooks", "agentnav-unblock.cmd"), os.path.join(claude_home, "hooks", "agentnav-unblock.cmd")),
+        (os.path.join(HOME, "startup", "Herdr server.vbs"), os.path.join(startup, "Herdr server.vbs")),
+        (os.path.join(HOME, "config", "herdr.config.toml"), os.path.join(appdata, "herdr", "config.toml")),
+    ]
+
+
+def _git(args, timeout=30):
+    """git en el repo de AgentNav. (código, stdout, stderr); AgentNavError si no hay git, no arranca o se cuelga."""
+    git = shutil.which("git")
+    if not git:
+        raise AgentNavError("no encuentro git en el PATH")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # sin consola no hay quien conteste un pedido de credenciales
+    try:
+        cp = subprocess.run([git, "--no-optional-locks", "-C", HOME, *args], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=timeout, env=env, creationflags=CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        raise AgentNavError(f"git {' '.join(args)}: sin respuesta en {timeout} s")
+    except OSError as e:
+        raise AgentNavError(f"no pude ejecutar git: {e}")
+    return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
+def parse_ahead_behind(text):
+    """Salida de `git rev-list --left-right --count HEAD...origin/main` ("2\\t3") → (adelante, atrás)."""
+    m = re.fullmatch(r"\s*(\d+)\s+(\d+)\s*", text or "")
+    if not m:
+        raise AgentNavError(f"salida inesperada de git rev-list: {(text or '')[:80]!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
+def update_action(dirty, ahead, behind, check=False):
+    """Qué hace `update` con el repo: "al_dia" | "nuevos" (sólo --check, hay commits que traer) | "sucio" (hay que
+    traer pero el árbol tiene cambios locales: no se toca nada) | "adelantado" (commits locales sin pushear: no se
+    hace pull) | "pull". Los cambios locales sólo estorban al pull: sin nada que traer se sigue y se sincronizan las copias."""
+    if check:
+        return "nuevos" if behind else "al_dia"
+    if behind and dirty:
+        return "sucio"
+    if ahead:
+        return "adelantado"
+    return "pull" if behind else "al_dia"
+
+
+def merge_config_keeping_theme(repo_text, live_text):
+    """Texto del config.toml del repo con la sección [theme] (y [theme.custom*]) del archivo vivo: el tema se elige
+    dentro de Herdr y sólo queda escrito ahí, así que una copia cruda lo pisaría. Si el vivo no tiene sección de tema,
+    queda la del repo. AgentNavError si el resultado no parsea."""
+    before, mine, after = _theme_sections(repo_text)
+    _, live_theme, _ = _theme_sections(live_text)
+    new = before + (live_theme or mine) + after
+    try:
+        import tomllib
+        tomllib.loads(new)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise AgentNavError(f"el config.toml resultante no parsea, no lo escribo: {e}")
+    return new
+
+
+def repo_status(fetch_timeout=30):
+    """Estado del clon de AgentNav frente a origin: {"sha", "upstream", "dirty", "ahead", "behind", "fetch_error"}.
+    AgentNavError si HOME no es un clon con remoto origin. Si el fetch falla (sin red), fetch_error lo cuenta y
+    adelante/atrás salen de lo último que se trajo."""
+    sin_clon = (f"{HOME} no es un clon de git: reinstalá con el zip o cloná https://github.com/pablitotester/AgentNav "
+                "(git clone https://github.com/pablitotester/AgentNav.git C:\\AgentNav)")
+    if not os.path.exists(os.path.join(HOME, ".git")):
+        raise AgentNavError(sin_clon)
+    code, _, _ = _git(["rev-parse", "--is-inside-work-tree"], timeout=10)
+    if code != 0:
+        raise AgentNavError(sin_clon)
+    code, _, _ = _git(["remote", "get-url", "origin"], timeout=10)
+    if code != 0:
+        raise AgentNavError(f"{HOME} no tiene remoto origin: " + sin_clon.split(": ", 1)[1])
+    fetch_error = None
+    try:
+        code, out, err = _git(["fetch", "origin"], timeout=fetch_timeout)
+        if code != 0:
+            lines = [l.strip() for l in (err or out).splitlines() if l.strip()]
+            # git explica en varias líneas; la útil es la primera "fatal:" (la última es "and the repository exists.")
+            fetch_error = next((l for l in lines if l.startswith("fatal:")), lines[0] if lines else f"salió con {code}")
+    except AgentNavError as e:
+        fetch_error = str(e)
+    _, branch, _ = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)  # "HEAD" = suelto
+    code, up, _ = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], timeout=10)
+    if code == 0 and up.startswith("origin/"):
+        upstream = up
+    elif branch == "main":
+        upstream = "origin/main"  # clon recién hecho sin tracking: main sigue a origin/main
+    else:
+        upstream = None  # HEAD suelto o rama propia sin upstream: no hay con qué comparar ni a qué hacer pull
+    _, sha, _ = _git(["rev-parse", "--short", "HEAD"], timeout=10)
+    # Sólo cambios en archivos versionados: uno sin seguimiento no estorba al pull (y si estorbara, git lo dice).
+    _, status, _ = _git(["status", "--porcelain", "--untracked-files=no"], timeout=10)
+    st = {"sha": sha, "branch": branch, "upstream": upstream, "dirty": bool(status), "ahead": 0, "behind": 0,
+          "fetch_error": fetch_error}
+    if upstream:
+        code, out, err = _git(["rev-list", "--left-right", "--count", f"HEAD...{upstream}"], timeout=10)
+        if code != 0:
+            raise AgentNavError(f"no pude comparar HEAD con {upstream}: {err or out}")
+        st["ahead"], st["behind"] = parse_ahead_behind(out)
+    return st
+
+
+def _sin_upstream(st):
+    """Texto del aviso cuando no hay rama remota con qué comparar, o None si la hay."""
+    if st["upstream"]:
+        return None
+    que = "HEAD suelto" if st["branch"] == "HEAD" else f"rama {st['branch']} sin upstream"
+    return f"{que} en {HOME}: no comparo con origin ni hago pull (git checkout main)"
+
+
+def sync_installed_copies(say=print):
+    """Copia a su lugar las copias instaladas que difieran del repo (bytes exactos: el .ps1 lleva BOM, el .cmd no).
+    Al config.toml de Herdr lo respalda antes y le pide al servidor que lo recargue. Devuelve los destinos que cambiaron."""
+    changed = []
+    for src, dst in installed_copies():
+        if not os.path.isfile(src) or (os.path.isfile(dst) and _same_file(src, dst)):
+            continue
+        es_cfg = os.path.basename(src) == "herdr.config.toml"
+        habia = os.path.isfile(dst)
+        try:
+            new = None
+            if es_cfg and habia:
+                # El tema se elige dentro de Herdr y sólo queda en el config vivo: se conserva su sección [theme].
+                with open(src, encoding="utf-8") as f, open(dst, encoding="utf-8") as g:
+                    repo_text, live_text = f.read(), g.read()
+                new = merge_config_keeping_theme(repo_text, live_text)
+                if new == live_text:
+                    continue  # difería sólo en el tema propio: no hay nada que traer
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if es_cfg and habia:
+                bak = dst + ".bak-" + time.strftime("%Y-%m-%d-%H%M%S")
+                shutil.copyfile(dst, bak)
+                say(f"respaldo: {bak}")
+            if new is not None:
+                with open(dst, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(new)
+            else:
+                shutil.copyfile(src, dst)
+        except OSError as e:
+            raise AgentNavError(f"no pude copiar {src} → {dst}: {e}")
+        say(f"{'actualizado' if habia else 'instalado'}: {dst}" + (" (tema propio conservado)" if new is not None else ""))
+        changed.append(dst)
+        if es_cfg and dst == HERDR_CFG:  # el servidor lee el config real, no el de AGENTNAV_SYNC_ROOT
+            try:
+                if server_running():
+                    api("server", "reload-config", timeout=15)
+                    say("servidor de Herdr: config recargado")
+            except AgentNavError as e:
+                say(f"el servidor de Herdr no recargó el config ({e}); se toma al reiniciar o con herdr server reload-config")
+    if not changed:
+        say("nada que sincronizar: hooks, arranque y config de Herdr iguales al repo")
+    return changed
+
+
+def cmd_update(argv, say=print):
+    check = "--check" in argv
+    st = repo_status(fetch_timeout=30)
+    if st["fetch_error"]:
+        raise AgentNavError(f"git fetch origin falló: {st['fetch_error']}")
+    if _sin_upstream(st):
+        raise AgentNavError(_sin_upstream(st))
+    action = update_action(st["dirty"], st["ahead"], st["behind"], check)
+    if action == "nuevos":
+        say(f"hay {st['behind']} commit(s) nuevos en {st['upstream']}: agentnav update")
+        return 10
+    if action == "al_dia":
+        say(f"al día en {st['sha']}" + (f" (hay cambios locales sin commitear en {HOME})" if st["dirty"] else ""))
+        if check:
+            return 0
+    elif action == "sucio":
+        say(f"hay {st['behind']} commit(s) para traer pero cambios locales sin commitear en {HOME}; no toco nada "
+            "(git status, y commiteá o descartá)")
+        return 1
+    elif action == "adelantado":
+        say(f"{HOME} tiene {st['ahead']} commit(s) locales sin pushear"
+            + (f" y {st['upstream']} {st['behind']} nuevos" if st["behind"] else "") + ": no hago pull (git push, o rebase a mano)")
+    elif action == "pull":
+        remote, _, branch = st["upstream"].partition("/")
+        code, out, err = _git(["pull", "--ff-only", remote, branch], timeout=60)
+        if code != 0:
+            raise AgentNavError(f"git pull --ff-only falló:\n{err or out}")
+        _, sha, _ = _git(["rev-parse", "--short", "HEAD"], timeout=10)
+        say(f"actualizado: {st['sha']} → {sha} ({st['behind']} commit(s))")
+    sync_installed_copies(say)
+    say("listo; agentnav doctor para verificar la instalación.")
+    return 0
+
+
+# ---------------------------------------------------------------- doctor
 
 def cmd_doctor():
     results = []  # (True|False|None, texto)  None = aviso, no cuenta como problema
@@ -2056,8 +2264,9 @@ def cmd_doctor():
     on_path = [d for d in os.environ.get("PATH", "").split(os.pathsep) if "\\.herdr\\" in d.lower()]
     if on_path and not any(_norm_path(d) == _norm_path(cur) for d in on_path):
         check(None, f"PATH apunta a una versión fija de Herdr ({on_path[0]}); tras 'herdr update' conviene que apunte a {cur}")
+    # Copias instaladas fuera del repo, en el orden de installed_copies()
+    (_, hook), (_, unblock), (repo_vbs, vbs), (repo_cfg, cfg_path) = installed_copies()
     # Config de Herdr
-    cfg_path = os.path.join(os.environ.get("APPDATA", ""), "herdr", "config.toml")
     try:
         with open(cfg_path, encoding="utf-8") as f:
             cfg = f.read()
@@ -2073,10 +2282,18 @@ def cmd_doctor():
             check(bool((parsed.get("session") or {}).get("resume_agents_on_restore")), "config.toml: agentes se reanudan al restaurar")
         except Exception as e:  # tomllib falta (Python < 3.11) o el TOML está roto
             check(False, f"config.toml no parsea: {e}")
-        repo_cfg = os.path.join(HOME, "config", "herdr.config.toml")
         if os.path.isfile(repo_cfg):
             same = _same_file(repo_cfg, cfg_path)
-            check(same, "config.toml igual a la copia del repo" if same else f"config.toml difiere de {repo_cfg} (copiar la que esté bien)")
+            if same:
+                check(True, "config.toml igual a la copia del repo")
+            else:
+                try:  # ¿difiere sólo en la sección de tema (elegido dentro de Herdr)? Entonces no hay nada que traer.
+                    with open(repo_cfg, encoding="utf-8") as f:
+                        solo_tema = merge_config_keeping_theme(f.read(), cfg) == cfg
+                except (OSError, AgentNavError):
+                    solo_tema = False
+                check(solo_tema, f"config.toml igual a la copia del repo (tema propio: {current_theme(cfg)[0]})" if solo_tema
+                      else f"config.toml difiere de {repo_cfg} (agentnav update lo copia, con respaldo y conservando el tema)")
     except OSError:
         check(False, f"no encuentro {cfg_path}")
     # Plugin de Herdr (gancho tab.created → agentnav adopt)
@@ -2093,8 +2310,6 @@ def cmd_doctor():
     except AgentNavError as e:
         check(False, f"plugin de Herdr: {e}")
     # Hooks de Claude Code
-    hook = os.path.join(CLAUDE_HOME, "hooks", "agentnav-state.ps1")
-    unblock = os.path.join(CLAUDE_HOME, "hooks", "agentnav-unblock.cmd")
     if os.path.isfile(hook):
         with open(hook, "rb") as f:
             bom = f.read(3) == b"\xef\xbb\xbf"
@@ -2109,11 +2324,11 @@ def cmd_doctor():
               else f"{unblock}: tiene BOM o no empieza con @echo off (cmd fallaría en cada herramienta)")
     else:
         check(False, f"falta {unblock}")
-    for name in ("agentnav-state.ps1", "agentnav-unblock.cmd"):
-        a, b = os.path.join(HOME, "hooks", name), os.path.join(CLAUDE_HOME, "hooks", name)
+    for a, b in installed_copies()[:2]:
+        name = os.path.basename(a)
         if os.path.isfile(a) and os.path.isfile(b):
             same = _same_file(a, b)
-            check(same, f"{name} igual a la copia del repo" if same else f"{name} difiere entre {a} y {b}")
+            check(same, f"{name} igual a la copia del repo" if same else f"{name} difiere entre {a} y {b} (agentnav update)")
     try:
         settings = _read_json_file(os.path.join(CLAUDE_HOME, "settings.json"), "settings.json de Claude") or {}
         hooks = settings.get("hooks") or {}
@@ -2175,17 +2390,33 @@ def cmd_doctor():
     except AgentNavError as e:
         check(False, str(e))
     # Arranque, Python, Windows Terminal
-    vbs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Herdr server.vbs")
     check(os.path.isfile(vbs), "arranque automático del servidor (Herdr server.vbs en Inicio)" if os.path.isfile(vbs) else f"falta {vbs}")
-    repo_vbs = os.path.join(HOME, "startup", "Herdr server.vbs")
     if os.path.isfile(vbs) and os.path.isfile(repo_vbs) and not _same_file(vbs, repo_vbs):
-        check(False, f"Herdr server.vbs de Inicio difiere de {repo_vbs}")
+        check(False, f"Herdr server.vbs de Inicio difiere de {repo_vbs} (agentnav update)")
     check(bool(shutil.which("wt.exe") or shutil.which("wt")), "Windows Terminal (wt.exe)")
     import struct
     bits = struct.calcsize("P") * 8
     check(bits == 64, f"Python {sys.version.split()[0]} de {bits} bits en {sys.executable}" if bits == 64
           else f"Python de {bits} bits: el escaneo de procesos no funciona y 'continue' podría pisar una conversación abierta afuera")
     check(bool(shutil.which("git")), "git (para rama y cambios en el selector)")
+    # El repo frente a origin (sin red no demora más que el timeout del fetch, y nunca es ✖)
+    if shutil.which("git"):
+        try:
+            st = repo_status(fetch_timeout=10)
+            if st["fetch_error"]:
+                check(None, f"no pude consultar origin: {st['fetch_error']}")
+            elif _sin_upstream(st):
+                check(None, _sin_upstream(st))
+            elif st["behind"]:
+                check(None, f"hay {st['behind']} commit(s) nuevos en origin: agentnav update")
+            else:
+                check(True, f"repo al día con origin ({st['sha']})")
+            if st["ahead"]:
+                check(None, f"{st['ahead']} commit(s) locales en {HOME} sin pushear a origin")
+            if st["dirty"]:
+                check(None, f"cambios locales sin commitear en {HOME}")
+        except AgentNavError as e:
+            check(None, str(e))
     # Herdr propio (fork con temas)
     repo = fork_repo()
     if repo:
@@ -2434,6 +2665,8 @@ def main(argv):
         return cmd_hoy(rest)
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd in ("update", "actualizar"):
+        return cmd_update(argv[1:])
     if cmd in ("herdr-sync", "herdr"):
         return cmd_herdr_sync(argv[1:])
     if cmd in ("theme", "tema"):

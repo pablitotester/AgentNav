@@ -1437,14 +1437,6 @@ def _adopt_run(event, wid, tid, pid, say):
     hint = (origin or {}).get("cwd") or ""
     project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
     path = _tab_path(hint, project)
-    label = _tab_label(path)
-    try:
-        if event == "pane.created":
-            api("pane", "rename", pid, label)  # nombre en el borde del panel, como la pestaña
-        else:
-            api("tab", "rename", tid, label)
-    except AgentNavError:
-        pass
     if not wait_prompt(pid, 15000):
         say(f"{pid}: no vi el prompt del shell en 15 s (¿prompt decorado? settings.json → prompt_regex); sigo igual.")
     if _norm_path(mine.get("cwd") or "") != _norm_path(path):
@@ -1453,6 +1445,15 @@ def _adopt_run(event, wid, tid, pid, say):
         if code != 0:
             raise AgentNavError(f"{pid}: no pude cambiar de carpeta ({(err or out)[:160]})")
         wait_prompt(pid, 5000)
+    # El nombre recién después del cd: si el cd falla, no queda un panel con nombre de carpeta y carpeta equivocada.
+    label = _tab_label(path)
+    try:
+        if event == "pane.created":
+            api("pane", "rename", pid, label)  # nombre en el borde del panel, como la pestaña
+        else:
+            api("tab", "rename", tid, label)
+    except AgentNavError:
+        pass
     return 0
 
 

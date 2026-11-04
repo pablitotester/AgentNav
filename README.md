@@ -47,7 +47,7 @@ agentnav recent              carpetas donde usaste Claude Code y no están regis
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, arranque, registro
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
-agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); --force si hay agentes ocupados o para reinstalar el mismo tag
+agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
 agentnav ntfy-test           aviso de prueba al teléfono
 agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
 ```
@@ -119,8 +119,12 @@ temas y publica un release `agentnav-vX.Y.Z`. Si el rebase choca, abre un issue 
 En la PC, `agentnav herdr-sync` baja ese release, verifica el SHA-256, guarda el oficial como `herdr.exe.oficial`, para el
 servidor, reemplaza el exe y levanta todo de nuevo (`agentnav app`). Si el fork va por una versión más nueva que la
 instalada, antes corre `herdr update` para que el instalador oficial traiga su carpeta y sus archivos de conpty, y recién
-después pisa el exe. `doctor` dice si el exe instalado es el del fork, si `herdr update` lo pisó y si el fork tiene un
-build más nuevo. Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
+después pisa el exe. Tanto `herdr-sync` como `doctor` comparan el SHA-256 del exe instalado con el del asset
+`herdr.exe.sha256` del último release, no sólo el tag: si el workflow republicó `agentnav-vX.Y.Z` con otro parche de temas
+(mismo tag, otro exe), `doctor` avisa "el fork republicó ... con otro build" y `herdr-sync` lo instala sin `--force`.
+`doctor` dice además si el exe instalado es el del fork, si `herdr update` lo pisó, si el fork tiene una versión más
+nueva y si está registrada la tarea programada "AgentNav Herdr update" (el chequeo automático que deja
+`herdr-fork\install.ps1`). Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
 
 **Otra PC desde cero (la de casa):** el release del fork trae también el zip completo con conpty y un manifiesto
 `agentnav-latest.json` con la misma forma que `herdr.dev/latest.json`, así que el instalador oficial de Herdr lo instala

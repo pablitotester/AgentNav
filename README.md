@@ -52,6 +52,7 @@ agentnav update [--check]    git pull --ff-only de origin y re-copia hooks, arra
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
 agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
 agentnav ntfy-test           aviso de prueba al teléfono
+agentnav labels              pone ya la etiqueta "<agente> · <tarea>" a todos los paneles con agente (`app` lo hace solo al arrancar)
 agentnav app                 lo que corre el acceso directo: servidor arriba, ventana de Herdr al frente o pestaña nueva
 ```
 
@@ -174,7 +175,8 @@ la conversación es nueva y el título sigue en "Claude Code", va el principio d
 cada prompt, Stop y notificación con `pane report-metadata --title` (no toca el nombre del agente ni el del panel), y
 lo borra al cerrar la sesión. Al arrancar un agente desde `open` o `tab`, AgentNav pone el nombre solo hasta el primer
 pedido. Un panel sin agente no lleva etiqueta; si se lanza `claude` a mano en esa consola, aparece con su primer pedido.
-Herdr recorta el texto si el panel es angosto.
+Herdr recorta el texto si el panel es angosto. Un panel idle no genera eventos, así que `agentnav app` (el acceso
+directo) etiqueta a todos los agentes vivos al arrancar, y `agentnav labels` lo hace a mano cuando haga falta.
 
 ## Límites conocidos del estado
 

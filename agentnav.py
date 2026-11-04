@@ -29,6 +29,7 @@ Uso:
                            verifica el SHA-256, guarda el oficial como herdr.exe.oficial y reinicia el servidor.
                            --force lo hace aunque haya agentes trabajando
   agentnav ntfy-test       manda un aviso de prueba al teléfono (settings.json → ntfy)
+  agentnav labels          pone ya la etiqueta "<agente> · <tarea>" a todos los paneles con agente (app lo hace solo)
   agentnav up              sólo levanta el servidor
   agentnav attach          sólo abre la pestaña de Windows Terminal
   agentnav app             lo que corre el acceso directo del escritorio: servidor arriba y la ventana de Herdr al frente
@@ -799,6 +800,59 @@ def pane_title(pane, title):
         pass
 
 
+# Lo mismo que filtra el hook (Pane-Label): un pedido con pinta de clave no va al borde del panel.
+SECRET_RE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|eyJ[A-Za-z0-9_-]{10,}"
+                       r"|[A-Fa-f0-9]{32,}|-----BEGIN|authorization\s*:|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])")
+
+
+def agent_label(a, hint=""):
+    """La etiqueta del panel con la misma regla que Pane-Label del hook: el nombre que Herdr le dio al agente (o su
+    tipo), y la tarea = título que Claude Code puso a la conversación; mientras siga en "Claude Code", `hint` (el
+    último pedido). Una línea, 60 caracteres, sin comillas dobles ni nada con pinta de clave."""
+    name = str(a.get("name") or a.get("agent") or "agente")
+    task = str(a.get("terminal_title_stripped") or "").strip()
+    if not task or task == "Claude Code":
+        task = str(hint or "")
+    task = re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", task).replace('"', "'").strip()
+    if SECRET_RE.search(task):
+        task = ""
+    if len(task) > 60:
+        task = task[:59].rstrip() + "…"
+    return f"{name} · {task}" if task else name
+
+
+def _working_hint(sid):
+    """El último pedido de esa sesión según la marca working\\<sid> del hook, si está trabajando; si no, ""."""
+    if not sid:
+        return ""
+    path = os.path.join(STATE_DIR, "working", re.sub(r"[^A-Za-z0-9_-]", "_", str(sid)))
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def label_agents(say=print):
+    """Pone la etiqueta a todos los agentes vivos de una vez: lo que el hook hace evento a evento, para los paneles
+    que están idle sin eventos (recién instalado el hook, servidor reiniciado). Un `agent list` y un reporte por agente."""
+    try:
+        agents = field(api("agent", "list", timeout=10), "agents")
+    except AgentNavError as e:
+        say(f"sin etiquetas: {e}")
+        return 1
+    n = 0
+    for a in agents if isinstance(agents, list) else []:
+        pane = a.get("pane_id") if isinstance(a, dict) else None
+        if not pane:
+            continue
+        sid = ((a.get("agent_session") or {}).get("value") or "") if isinstance(a.get("agent_session"), dict) else ""
+        pane_title(pane, agent_label(a, _working_hint(sid)))
+        n += 1
+    say(f"{n} etiqueta(s) de panel puesta(s).")
+    return 0
+
+
 # Prompt de pwsh / Windows PowerShell, o de un shell tipo bash, con espacio o salto de línea finales. Un prompt
 # decorado (oh-my-posh, starship) se declara en settings.json → "prompt_regex" (sintaxis de regex de Rust/Herdr).
 PROMPT_RE = r"(PS [^\n]*>|[A-Za-z]:\\[^\n]*>|\$) ?\s*$"  # pwsh, cmd (C:\x>) y bash
@@ -1164,6 +1218,7 @@ def cmd_app(say=print):
     """Herdr como aplicación (acceso directo del escritorio): servidor arriba, y la ventana al frente o una pestaña nueva."""
     if ensure_server(say):
         restore_projects(load_projects(), say)
+    label_agents(say)  # los paneles idle no tienen eventos: la etiqueta se repone acá
     if inside_herdr():
         say("ya estás dentro de Herdr.")
         return 0
@@ -2746,6 +2801,8 @@ def main(argv):
         return cmd_theme("" if arg in ("pick", "list") else arg, interactive=(True if arg == "pick" else False if arg == "list" else None))
     if cmd in ("ntfy-test", "ntfy"):
         return cmd_ntfy_test()
+    if cmd in ("labels", "etiquetas"):
+        return label_agents()
     if cmd == "up":
         if ensure_server():
             print("servidor arriba.")

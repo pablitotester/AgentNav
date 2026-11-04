@@ -95,6 +95,40 @@ class ClaudeCode(unittest.TestCase):
             self.assertEqual(an._tab_path(os.path.join(tmp, "no"), {"path": os.path.join(tmp, "no")}),
                              an.new_project_base())                 # nada existe: donde nacen los proyectos
 
+    def test_tab_label(self):
+        self.assertEqual(an._tab_label("C:\\Proyectos\\Nevatars\\"), "Nevatars")
+        self.assertEqual(an._tab_label("C:\\Proyectos\\Nevatars/src"), "src")
+        self.assertEqual(an._tab_label("C:\\"), "shell")          # raíz: no hay nombre
+        self.assertEqual(an._tab_label("C:\\obra\\2024"), "shell")  # numérica: al nacer la adoptaría el plugin
+        self.assertEqual(an._tab_label("C:\\obra\\v2"), "v2")
+
+    def test_adopt_origin(self):
+        a = {"pane_id": "w1:p1", "cwd": "C:\\A", "rect": {"x": 0, "y": 0, "width": 50, "height": 20}}
+        b = {"pane_id": "w1:p2", "cwd": "C:\\B", "rect": {"x": 50, "y": 0, "width": 50, "height": 20}}
+        new = {"pane_id": "w1:p3", "cwd": "C:\\", "rect": {"x": 50, "y": 20, "width": 50, "height": 20}}
+        pool = [a, b]
+        layout = {"panes": [dict(pane_id=x["pane_id"], rect=x["rect"]) for x in (a, b, new)]}
+        # rastro de foco: el último enfocado que no sea el nuevo y esté entre los candidatos
+        self.assertIs(an._adopt_origin(pool, "w1:p3", ["w1:p3", "w1:p1", "w1:p2"]), a)
+        self.assertIs(an._adopt_origin(pool, "w1:p3", ["w1:p9", "w1:p2"]), b)   # p9 ya no existe
+        # sin rastro: geometría del split (el nuevo nació debajo de b)
+        self.assertIs(an._adopt_origin(pool, "w1:p3", [], layout), b)
+        self.assertIsNone(an._adopt_origin(pool, "w1:p3", []))                 # pestaña nueva sin rastro: nada
+        self.assertIsNone(an._adopt_origin(pool, "w1:p3", [], {"panes": []}))
+
+    def test_read_focus_trail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = an.FOCUS_LOG
+            an.FOCUS_LOG = os.path.join(tmp, "focus.log")
+            try:
+                self.assertEqual(an.read_focus_trail("w1"), [])             # sin archivo
+                with open(an.FOCUS_LOG, "w", encoding="utf-8") as f:
+                    f.write("w1 w1:p1\nw2 w2:p1\nw1 w1:p2\nw1 w1:p1\nbasura\n")
+                self.assertEqual(an.read_focus_trail("w1"), ["w1:p1", "w1:p2"])  # reciente primero, sin repetir
+                self.assertEqual(an.read_focus_trail("w3"), [])
+            finally:
+                an.FOCUS_LOG = old
+
 
 class Diario(unittest.TestCase):
     def setUp(self):

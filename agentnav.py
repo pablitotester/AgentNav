@@ -8,10 +8,12 @@ Uso:
   agentnav new <nombre> [ruta]
                            crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre
   agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
-  agentnav tab [shell]     pestaña nueva en el espacio actual: misma carpeta que el panel de origen y el mismo agente
-                           (es lo que corre ctrl+b c). Con "shell": pestaña pelada en C:\\ (ctrl+b shift+c)
+  agentnav tab [shell|agent]
+                           pestaña nueva en el espacio actual: un shell en la misma carpeta que el panel de origen,
+                           sin agente (es lo que corre ctrl+b c). Con "shell": pestaña pelada en C:\\ (ctrl+b shift+c).
+                           Con "agent": además arranca el mismo agente que el panel de origen (otro Claude, conversación nueva)
   agentnav adopt           lo corre el plugin de Herdr cuando nace una pestaña (el "+" de la barra) o un panel (split):
-                           lo lleva a la carpeta del proyecto y arranca el mismo agente, como `tab`
+                           lo lleva a la carpeta del proyecto, como `tab`. No arranca ningún agente
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
   agentnav recent          carpetas donde usaste Claude Code y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
@@ -53,6 +55,7 @@ CLAUDE_HOME = os.path.join(USERPROFILE, ".claude")
 CLAUDE_PROJECTS = os.path.join(CLAUDE_HOME, "projects")
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentNav")
 JOURNAL_DIR = os.path.join(STATE_DIR, "journal")
+FOCUS_LOG = os.path.join(STATE_DIR, "focus.log")  # lo escribe plugin\focus.py en cada pane.focused: "<espacio> <panel>"
 
 CREATE_NO_WINDOW = 0x08000000
 DETACHED_PROCESS = 0x00000008
@@ -1313,8 +1316,10 @@ def _notify_error(fn):
 
 @_notify_error
 def cmd_tab(mode="", say=print, start_timeout_ms=90000):
-    """agentnav tab: pestaña nueva en el espacio actual, en la carpeta del panel de origen y con el mismo agente.
-    Un Claude nuevo arranca una conversación nueva (nunca --continue: la viva ya está en la otra pestaña).
+    """agentnav tab: pestaña nueva en el espacio actual, con un shell en la carpeta del panel de origen y sin agente
+    (hasta el 4/11 abría otro Claude ahí; el Claude lo lanza uno a mano cuando lo quiere).
+    `tab agent`: lo de antes, además arranca el mismo agente que el panel de origen; un Claude nuevo arranca una
+    conversación nueva (nunca --continue: la viva ya está en la otra pestaña).
     `tab shell`: la pestaña pelada de siempre (shell en C:\\), con etiqueta "shell" para que el plugin no la adopte."""
     snap = snapshot()
     wid, ws, pane, project = _tab_source(snap, load_projects())
@@ -1324,15 +1329,22 @@ def cmd_tab(mode="", say=print, start_timeout_ms=90000):
         api("tab", "create", "--workspace", wid, "--cwd", path, "--label", "shell", "--focus")
         return 0
     path = _tab_path(pane.get("cwd") or "", project)
-    a = _tab_agent(snap, wid, pane, project)
+    a = _tab_agent(snap, wid, pane, project) if mode in ("agent", "agente") else None
     taken = {x.get("name") for x in snap["agents"] if x.get("name")}
-    label = agent_name(a["name"], taken) if a else os.path.basename(path.rstrip("\\/")) or "shell"
+    label = agent_name(a["name"], taken) if a else _tab_label(path)
     say(f"{ws.get('label') or wid}: pestaña {label} en {path}")
     t = api("tab", "create", "--workspace", wid, "--cwd", path, "--label", label, "--focus")
     if a is None:
         return 0
     a = dict(a, name=label)
     return 0 if _start_herdr_agent(a, path, field(t, "root_pane", "pane_id"), start_timeout_ms, say, set(), True) else 1
+
+
+def _tab_label(path):
+    """Etiqueta de una pestaña de shell: el nombre de su carpeta. Nunca numérica, que es la marca de las pestañas
+    peladas de Herdr que el plugin adopta."""
+    base = os.path.basename(path.rstrip("\\/")) or "shell"
+    return "shell" if re.fullmatch(r"\d+", base) else base
 
 
 def _tab_path(cwd, project):
@@ -1347,14 +1359,19 @@ def _tab_path(cwd, project):
     return cwd if cwd and os.path.isdir(cwd) else new_project_base()
 
 
-def cmd_adopt(argv, say=print, start_timeout_ms=90000):
+def cmd_adopt(argv, say=print):
     """Ganchos `tab.created` y `pane.created` del plugin (C:\\AgentNav\\plugin). Herdr los llama con HERDR_WORKSPACE_ID,
     HERDR_TAB_ID, HERDR_PANE_ID, HERDR_PLUGIN_EVENT y HERDR_PLUGIN_CONTEXT_JSON. El "+" de la barra y el split entran
     por la misma API que los scripts (invocation_source = api en todos los casos), así que lo que distingue algo pelado
     de Herdr es: en una pestaña, la etiqueta numérica ("2", "3"…; las de AgentNav llevan nombre); en un panel, que nazca
     en el new_cwd fijo de la config (C:\\) y no en una carpeta pedida con --cwd. Mientras `open` arma un espacio hay una
     pausa para no pisar el panel donde está arrancando el agente.
-    El gancho vuelve enseguida: el trabajo (esperar el prompt, cd, arrancar el Claude) sigue en un hijo suelto."""
+    Sólo lleva el panel a la carpeta y le pone nombre a la pestaña: no arranca ningún agente (hasta el 4/11 también
+    abría otro Claude ahí). El gancho vuelve enseguida: el trabajo (esperar el prompt, cd) sigue en un hijo suelto.
+    La carpeta es la del panel desde donde se abrió. El evento no lo dice (tab.created y pane.created sólo traen lo
+    nuevo), así que el plugin anota cada cambio de foco en focus.log y adopt toma el último panel enfocado distinto
+    del nuevo; sin rastro, en un split vale la geometría (el panel que quedó pegado al nuevo) y, si no, el agente más
+    reciente o cualquier panel del mismo lugar."""
     ctx, ev = {}, {}
     try:
         ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
@@ -1391,11 +1408,11 @@ def cmd_adopt(argv, say=print, start_timeout_ms=90000):
                          creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         say(f"adopt: {pid} ({event}) se arma en segundo plano.")
         return 0
-    return _adopt_run(event, wid, tid, pid, say, start_timeout_ms)
+    return _adopt_run(event, wid, tid, pid, say)
 
 
 @_notify_error
-def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
+def _adopt_run(event, wid, tid, pid, say):
     snap = snapshot()
     ws = next((w for w in snap["workspaces"] if w.get("workspace_id") == wid), None)
     panes = snap.get("panes", [])
@@ -1407,16 +1424,27 @@ def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
     in_tab = [x for x in panes if x.get("tab_id") == tid and x.get("pane_id") != pid]
     if event == "pane.created" and not in_tab:
         return 0  # el panel raíz de una pestaña nueva: de ése se ocupa el gancho tab.created
-    # De dónde copiar carpeta y agente: en un split, los hermanos de la misma pestaña; en una pestaña nueva, el resto
-    # del espacio. Primero el agente más reciente entre ellos, si no cualquier panel.
+    # De dónde copiar la carpeta: en un split, los hermanos de la misma pestaña; en una pestaña nueva, el resto
+    # del espacio. El panel de origen sale del rastro de foco; si no, de la geometría del split; si no, el agente
+    # más reciente entre ellos o cualquier panel.
     pool = in_tab if event == "pane.created" else [x for x in panes if x.get("workspace_id") == wid and x.get("pane_id") != pid]
-    ids = {x.get("pane_id") for x in pool}
-    live = [x for x in snap["agents"] if x.get("pane_id") in ids]
-    src = max(live, key=lambda x: x.get("state_change_seq") or 0) if live else None
-    hint = (src or {}).get("cwd") or next((x.get("cwd") for x in pool if x.get("cwd")), "")
+    layout = next((l for l in snap.get("layouts", []) if l.get("tab_id") == tid), None) if event == "pane.created" else None
+    origin = _adopt_origin(pool, pid, read_focus_trail(wid), layout)
+    if origin is None:
+        ids = {x.get("pane_id") for x in pool}
+        live = [x for x in snap["agents"] if x.get("pane_id") in ids]
+        origin = max(live, key=lambda x: x.get("state_change_seq") or 0) if live else next((x for x in pool if x.get("cwd")), None)
+    hint = (origin or {}).get("cwd") or ""
     project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
     path = _tab_path(hint, project)
-    a = _tab_agent(snap, wid, {"pane_id": (src or {}).get("pane_id")}, project)
+    label = _tab_label(path)
+    try:
+        if event == "pane.created":
+            api("pane", "rename", pid, label)  # nombre en el borde del panel, como la pestaña
+        else:
+            api("tab", "rename", tid, label)
+    except AgentNavError:
+        pass
     if not wait_prompt(pid, 15000):
         say(f"{pid}: no vi el prompt del shell en 15 s (¿prompt decorado? settings.json → prompt_regex); sigo igual.")
     if _norm_path(mine.get("cwd") or "") != _norm_path(path):
@@ -1425,16 +1453,45 @@ def _adopt_run(event, wid, tid, pid, say, start_timeout_ms):
         if code != 0:
             raise AgentNavError(f"{pid}: no pude cambiar de carpeta ({(err or out)[:160]})")
         wait_prompt(pid, 5000)
-    if not a:
-        return 0
-    taken = {x.get("name") for x in snap["agents"] if x.get("name")}
-    label = agent_name(a["name"], taken)
-    if event != "pane.created":
-        try:
-            api("tab", "rename", tid, label)
-        except AgentNavError:
-            pass
-    return 0 if _start_herdr_agent(dict(a, name=label), path, pid, start_timeout_ms, say, set(), True) else 1
+    return 0
+
+
+def read_focus_trail(wid):
+    """Paneles del espacio que tomaron el foco, del más reciente al más viejo (lo anota plugin\\focus.py)."""
+    try:
+        with open(FOCUS_LOG, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-400:]
+    except OSError:
+        return []
+    out = []
+    for line in reversed(lines):
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == wid and parts[1] not in out:
+            out.append(parts[1])
+    return out
+
+
+def _adopt_origin(pool, pid, trail, layout=None):
+    """El panel desde donde se abrió el nuevo (pid), entre los candidatos de `pool`: el último enfocado según el
+    rastro que no sea el nuevo; si no hay rastro útil y es un split (`layout` de esa pestaña), el panel que quedó
+    pegado al nuevo: comparte borde y el mismo alto (split a la derecha) o el mismo ancho (split abajo).
+    None si nada lo decide."""
+    by_id = {x.get("pane_id"): x for x in pool}
+    for cand in trail:
+        if cand != pid and cand in by_id:
+            return by_id[cand]
+    rects = {p.get("pane_id"): p.get("rect") or {} for p in (layout or {}).get("panes", [])}
+    me = rects.get(pid)
+    if not me:
+        return None
+    for cand, r in rects.items():
+        if cand == pid or cand not in by_id or not r:
+            continue
+        right_of = r.get("x", -1) + r.get("width", 0) == me.get("x") and r.get("y") == me.get("y") and r.get("height") == me.get("height")
+        below = r.get("y", -1) + r.get("height", 0) == me.get("y") and r.get("x") == me.get("x") and r.get("width") == me.get("width")
+        if right_of or below:
+            return by_id[cand]
+    return None
 
 
 def cmd_recent():
@@ -2272,7 +2329,7 @@ def cmd_doctor():
             cfg = f.read()
         check("agentnav.py pick" in cfg, "config.toml: popup del selector (prefix+alt+p)")
         check("agentnav.py tab\"" in cfg and 'new_tab = ""' in cfg,
-              "config.toml: ctrl+b c abre la pestaña de AgentNav (misma carpeta, mismo agente)")
+              "config.toml: ctrl+b c abre la pestaña de AgentNav (shell en la misma carpeta, sin agente)")
         check("agentnav.py tab shell" in cfg, "config.toml: ctrl+b shift+c abre la pestaña pelada por la API")
         check("agentnav.py theme" in cfg, "config.toml: popup de temas (prefix+alt+t)")
         check('help = "prefix+f1"' in cfg, "config.toml: ayuda en prefix+F1 (el teclado en español no entrega '?')")
@@ -2302,8 +2359,9 @@ def cmd_doctor():
         mine = next((x for x in plugins if x.get("plugin_id") == "agentnav"), None)
         if mine and mine.get("enabled"):
             hooks = {e.get("on") for e in (mine.get("events") or [])}
-            check({"tab.created", "pane.created"} <= hooks,
-                  'plugin de Herdr "agentnav" enlazado: el "+" y el split abren en el proyecto con su agente' if {"tab.created", "pane.created"} <= hooks
+            need = {"tab.created", "pane.created", "pane.focused"}
+            check(need <= hooks,
+                  'plugin de Herdr "agentnav" enlazado: el "+" y el split abren un shell en la carpeta del panel de origen' if need <= hooks
                   else f"plugin de Herdr enlazado pero con ganchos viejos ({', '.join(sorted(hooks))}): herdr plugin unlink agentnav; herdr plugin link C:\\AgentNav\\plugin")
         else:
             check(False, "plugin de Herdr sin enlazar o apagado: herdr plugin link C:\\AgentNav\\plugin")

@@ -1,13 +1,17 @@
 # Plugin local de AgentNav para Herdr (30/10). Enlazado con: herdr plugin link C:\AgentNav\plugin
 # Cada pestaña y cada panel nuevos pasan por `agentnav adopt`. Las pestañas que nacen con la etiqueta numérica
 # de Herdr ("2", "3"…), que son las del "+" de la barra, y los paneles de split que nacen en el new_cwd fijo
-# (C:\) se llevan a la carpeta del proyecto y arrancan el mismo agente, igual que ctrl+b c. Lo que ya trae
+# (C:\) se llevan a la carpeta del panel desde donde se abrieron (si está dentro del proyecto; si no, la del
+# proyecto), igual que ctrl+b c, y quedan como shell: desde el 4/11 no arrancan ningún agente. Lo que ya trae
 # nombre o carpeta propia (lo que crean agentnav tab/open u otro script con --cwd) se deja como está.
+# El gancho pane.focused anota cada cambio de foco en %LOCALAPPDATA%\AgentNav\focus.log (plugin\focus.py, sin
+# importar agentnav.py): los eventos de creación no dicen desde qué panel se abrió lo nuevo, y adopt lo saca de ahí.
+# Después de cambiar los ganchos hay que re-enlazar: herdr plugin unlink agentnav; herdr plugin link C:\AgentNav\plugin
 id = "agentnav"
 name = "AgentNav"
 version = "0.1.0"
 min_herdr_version = "0.9.5"
-description = "El + de la barra abre la pestaña en la carpeta del proyecto y con su agente"
+description = "El + de la barra y el split abren un shell en la carpeta del proyecto"
 platforms = ["windows"]
 
 [[events]]
@@ -17,3 +21,7 @@ command = ["py", "-I", "C:/AgentNav/agentnav.py", "adopt"]
 [[events]]
 on = "pane.created"
 command = ["py", "-I", "C:/AgentNav/agentnav.py", "adopt"]
+
+[[events]]
+on = "pane.focused"
+command = ["py", "-I", "C:/AgentNav/plugin/focus.py"]

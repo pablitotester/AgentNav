@@ -166,6 +166,16 @@ y `agentnav doctor`. Volver a correrlo actualiza sin perder `settings.json` ni `
 
 Mandalo por WhatsApp, Drive o un pendrive: Gmail rechaza zips con `.cmd` adentro.
 
+## Etiqueta de cada panel
+
+Arriba de cada panel con agente, en el borde, Herdr muestra `<agente> · <tarea>`: el nombre que le dio Herdr al agente
+(el mismo de la barra lateral) y el título que Claude Code le pone solo a la conversación a medida que avanza. Mientras
+la conversación es nueva y el título sigue en "Claude Code", va el principio del último pedido. Lo escribe el hook en
+cada prompt, Stop y notificación con `pane report-metadata --title` (no toca el nombre del agente ni el del panel), y
+lo borra al cerrar la sesión. Al arrancar un agente desde `open` o `tab`, AgentNav pone el nombre solo hasta el primer
+pedido. Un panel sin agente no lleva etiqueta; si se lanza `claude` a mano en esa consola, aparece con su primer pedido.
+Herdr recorta el texto si el panel es angosto.
+
 ## Límites conocidos del estado
 
 - `Stop` no dispara si interrumpís con Esc: queda working hasta el `idle_prompt` (~1 min) o el siguiente pedido.

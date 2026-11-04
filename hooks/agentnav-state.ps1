@@ -200,6 +200,8 @@ function Invoke-Herdr([string[]]$cli) {
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $herdr; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    # herdr escribe UTF-8; sin esto .NET lee con la página OEM y una ñ o un acento del título llegan como cajas.
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8; $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
     # .NET Framework no tiene ArgumentList: se arma la línea con las reglas de CommandLineToArgvW.
     $quoted = foreach ($a in $cli) {
         if ($a -match '[\s"]' -or $a -eq "") {
@@ -220,6 +222,7 @@ function Report-Herdr([string[]]$cli) {
     $raw = Invoke-Herdr $cli
     if ($null -eq $raw) { return "TIMEOUT herdr" }
     $r = ($raw -replace '\s+', ' ').Trim()
+    if ($r -eq "") { return "" }  # report-metadata y pane run no imprimen nada cuando salen bien
     if ($r -match '"code":"pane_not_found"') { return "pane ya cerrado (ok)" }
     if ($r -match '"type":"(ok|pane_info|agent_reported|agent_released)"') { return "" }
     if ($r.Length -gt 160) { $r = $r.Substring(0, 160) }
@@ -241,7 +244,7 @@ function Pane-Label([string]$hint) {
         $task = [string]$me.terminal_title_stripped
         if (-not $task -or $task -eq "Claude Code") { $task = $hint }
         # El borde se ve en cualquier captura: un pedido que traiga algo con pinta de clave no va.
-        if ($task -match '(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])') { $task = "" }
+        if ($task -match '(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|eyJ[A-Za-z0-9_-]{10,}|[A-Fa-f0-9]{32,}|-----BEGIN|authorization\s*:|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])') { $task = "" }
         $task = Clean-Message $task 60
         $title = if ($task) { "$name " + [char]0xB7 + " $task" } else { $name }
         # Herdr no entiende "--title=texto"; el título empieza por el nombre del agente (letra), nunca por "-".
@@ -333,8 +336,8 @@ try {
 } catch { $result = ("EXC " + $_.Exception.Message) -replace '\s+', ' ' }
 
 # El aviso al teléfono va después del reporte a Herdr: la red no puede retrasar el estado del panel.
-if ($state -eq "blocked") { $extra = Notify-Phone "blocked" "$projectName espera" $message (Elapsed-Seconds $workingFile) }
-elseif ($Action -eq "stop") { $extra = Notify-Phone "done" "$projectName terminó" ("listo (" + [math]::Max($elapsed, 0) + " s): " + $last) $elapsed }
+if ($state -eq "blocked") { $extra += Notify-Phone "blocked" "$projectName espera" $message (Elapsed-Seconds $workingFile) }
+elseif ($Action -eq "stop") { $extra += Notify-Phone "done" "$projectName terminó" ("listo (" + [math]::Max($elapsed, 0) + " s): " + $last) $elapsed }
 
 # Traza mínima, una línea por evento. Se recorta a 200 líneas sólo cuando pasa de 100 KB.
 try {

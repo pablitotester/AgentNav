@@ -271,5 +271,38 @@ class EtiquetaPanel(unittest.TestCase):
             an.run = orig
 
 
+class EtiquetaTodos(unittest.TestCase):
+    def test_agent_label(self):
+        a = {"name": "qa-2", "agent": "claude", "terminal_title_stripped": "Arreglar el login"}
+        self.assertEqual(an.agent_label(a), "qa-2 · Arreglar el login")
+        self.assertEqual(an.agent_label({"agent": "claude", "terminal_title_stripped": "Claude Code"}, "hola\nmundo"), "claude · hola mundo")
+        self.assertEqual(an.agent_label({"name": "qa", "terminal_title_stripped": ""}), "qa")
+        self.assertEqual(an.agent_label({"name": "qa"}, "usá el token ghp_abcdefghijklmnop"), "qa")
+        self.assertEqual(an.agent_label({"name": "qa"}, 'di "hola"'), "qa · di 'hola'")
+        largo = an.agent_label({"name": "qa", "terminal_title_stripped": "x" * 80})
+        self.assertEqual(len(largo), len("qa · ") + 60)
+        self.assertTrue(largo.endswith("…"))
+
+    def test_label_agents_usa_agent_list_y_marca_working(self):
+        calls = []
+        orig_api, orig_run, orig_state = an.api, an.run, an.STATE_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "working"))
+            with open(os.path.join(tmp, "working", "sid-1"), "w", encoding="utf-8") as f:
+                f.write("revisá el tren")
+            an.STATE_DIR = tmp
+            an.api = lambda *a, **k: {"agents": [
+                {"name": "qa", "pane_id": "w1:p1", "terminal_title_stripped": "Claude Code", "agent_session": {"value": "sid-1"}},
+                {"agent": "claude", "pane_id": "w1:p2", "terminal_title_stripped": "Mapa nuevo"},
+                {"name": "sin-panel"}]}
+            an.run = lambda *a, **k: calls.append(a) or (0, "", "")
+            try:
+                self.assertEqual(an.label_agents(say=lambda *_: None), 0)
+            finally:
+                an.api, an.run, an.STATE_DIR = orig_api, orig_run, orig_state
+        self.assertEqual([c[2:] for c in calls], [("w1:p1", "--source", "agentnav", "--title", "qa · revisá el tren"),
+                                                  ("w1:p2", "--source", "agentnav", "--title", "claude · Mapa nuevo")])
+
+
 if __name__ == "__main__":
     unittest.main()

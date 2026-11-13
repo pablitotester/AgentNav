@@ -40,12 +40,12 @@ El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee U
 agentnav                     servidor arriba si hace falta + pestaña de Windows Terminal enganchada
 agentnav list                proyectos, cuáles están abiertos, rama y cambios, cada agente con su estado
 agentnav open <nombre>       abre el proyecto como espacio con sus agentes, o lo enfoca y repone los que falten
-agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su Claude
-agentnav close <nombre>      cierra el espacio; a los Claude les manda /exit antes
+agentnav new <nombre> [ruta] crea la carpeta (en C:\ o donde diga new_cwd de Herdr), la registra y la abre con su agente; --kind gemini (o --gemini) para que sea un Gemini
+agentnav close <nombre>      cierra el espacio; a los agentes les manda /exit (Claude) o /quit (Gemini) antes
 agentnav tab [shell|agent]   pestaña nueva en el espacio actual: un shell en la misma carpeta que el panel de origen, sin agente (ctrl+b c); con shell, la pelada (ctrl+b shift+c); con agent, además el mismo agente
 agentnav adopt               lo corre el plugin de Herdr cuando nace una pestaña (el "+") o un panel (split): lo lleva a la carpeta del proyecto, sin arrancar agente
 agentnav pick                el selector (lo corre el popup de Herdr)
-agentnav recent              carpetas donde usaste Claude Code y no están registradas
+agentnav recent              carpetas donde usaste Claude Code o Gemini CLI y no están registradas (con cuál)
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, arranque, registro; avisa si origin tiene commits nuevos
 agentnav update [--check]    git pull --ff-only de origin y re-copia hooks, arranque y config de Herdr (con respaldo); --check sólo avisa (sale 10 si hay nuevos)
@@ -87,8 +87,9 @@ Cada proyecto: nombre, ruta y qué abrir. Un agente puede ser un string (nombre 
 - `continue`: retoma la última conversación que tuvo pedidos **dentro de Herdr** en esa carpeta (`--resume <id>`, según el
   diario). Si no hay ninguna, `--continue` sólo cuando ningún otro Claude corre en esa carpeta (otro agente del proyecto o
   uno en otra terminal): `--continue` agarra la conversación más nueva y pisaría la que está abierta afuera. Por proyecto o por agente.
+  Con `kind: gemini` hace lo mismo con las sesiones de Gemini (ver **Gemini CLI**); con otros tipos no tiene efecto.
 - `args`: argumentos crudos para el agente (`["--model", "opus"]`), por proyecto o por agente.
-- `kind`: `claude` (default) o cualquier agente que Herdr conozca; `shell` es un panel común.
+- `kind`: `claude` (default), `gemini` o cualquier agente que Herdr conozca; `shell` es un panel común.
 - `command`: sólo para `shell`, se ejecuta al abrir.
 - `split`: `right` o `down`, parte el panel del agente anterior; sin `split`, pestaña propia. `ratio` entre 0 y 1.
 
@@ -110,6 +111,36 @@ y cuando pide permiso y llevaba al menos `min_seconds_blocked` (0: siempre, porq
 pocos segundos). En el teléfono: app ntfy, suscribirse al mismo topic. **El topic de ntfy.sh es público y adivinable**:
 viaja el nombre de la carpeta y los primeros 160 caracteres del pedido. Elegí un nombre largo y al azar, o usá un
 servidor propio.
+
+## Gemini CLI
+
+### Proyectos y agentes Gemini
+
+Un proyecto o un agente con `"kind": "gemini"` arranca Gemini CLI en vez de Claude Code (Herdr lo conoce: `agent start
+--kind gemini`). `agentnav new Obra --kind gemini` (o `--gemini`) lo registra así de entrada; en `projects.json` se
+puede mezclar, por ejemplo un Claude y un Gemini en el mismo proyecto:
+
+```json
+{ "name": "Obra", "path": "C:\\Obra", "continue": true,
+  "agents": [ "obra", { "name": "gem", "kind": "gemini" } ] }
+```
+
+Gemini guarda sus sesiones por carpeta en `%USERPROFILE%\.gemini\tmp\<id>\chats\session-<fecha>-<8 del id>.jsonl`;
+el `<id>` sale del registro `%USERPROFILE%\.gemini\projects.json` (ruta en minúsculas → id corto; cada carpeta `tmp\<id>`
+lleva además un `.project_root` con la ruta dueña) y `GEMINI_CLI_HOME` cambia esa raíz. Con eso `continue` sigue la
+misma regla que con Claude: retoma por `--resume <uuid>` la última sesión que tuvo pedidos dentro de Herdr en esa
+carpeta (según el diario; el hook anota el id de sesión de Gemini igual que el de Claude) siempre que no esté viva en
+otro panel ni en una terminal ajena; sin una, `--resume latest` (la más nueva de la carpeta) sólo si ningún otro Gemini
+corre ahí, porque dos Gemini sobre la misma sesión se pisan. Sin sesiones guardadas no manda nada: `--resume latest`
+sin sesiones termina con error. Un Gemini de afuera se reconoce por su proceso `node …\@google\gemini-cli\bundle\gemini.js`
+y el id que lleve en `--resume`/`-r`/`--session-id`.
+
+`close` le manda `/quit` a cada Gemini en el prompt (a Claude, `/exit`). `recent` lista también las carpetas con sesiones
+de Gemini, con una columna que dice cuál agente las usó. `doctor` muestra un bloque "Gemini CLI" sólo cuando `gemini`
+está en el PATH o algún proyecto lo usa: versión instalada y si los seis hooks nuestros están en
+`%USERPROFILE%\.gemini\settings.json` (`SessionStart`, `BeforeAgent`, `AfterAgent`, `SessionEnd`, `Notification`,
+`AfterTool`, todos con `agentnav-state.ps1 <acción> gemini` o `agentnav-unblock.cmd gemini`); si faltan, el estado de
+cada Gemini no llega a Herdr y lo pone el instalador con `-ConGemini`.
 
 ## Herdr propio: los temas dentro de la pantalla de settings
 

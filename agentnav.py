@@ -5,9 +5,10 @@ Uso:
   agentnav                 levanta el servidor de Herdr si hace falta y abre una pestaña de Windows Terminal enganchada
   agentnav list            proyectos registrados, cuáles están abiertos y el estado de cada agente
   agentnav open <nombre>   abre el proyecto como espacio de Herdr con sus agentes adentro (o lo enfoca si ya está)
-  agentnav new <nombre> [ruta]
-                           crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre
-  agentnav close <nombre>  cierra el espacio del proyecto (los Claude salen con /exit antes)
+  agentnav new <nombre> [ruta] [--kind gemini]
+                           crea la carpeta (en C:\\ o donde diga new_cwd de Herdr), registra el proyecto y lo abre.
+                           --kind (o --gemini): con qué agente; sin la opción, claude
+  agentnav close <nombre>  cierra el espacio del proyecto (los agentes salen con /exit o /quit antes)
   agentnav tab [shell|agent]
                            pestaña nueva en el espacio actual: un shell en la misma carpeta que el panel de origen,
                            sin agente (es lo que corre ctrl+b c). Con "shell": pestaña pelada en C:\\ (ctrl+b shift+c).
@@ -15,7 +16,7 @@ Uso:
   agentnav adopt           lo corre el plugin de Herdr cuando nace una pestaña (el "+" de la barra) o un panel (split):
                            lo lleva a la carpeta del proyecto, como `tab`. No arranca ningún agente
   agentnav pick            selector interactivo (es lo que corre el popup de Herdr con ctrl+b alt+p)
-  agentnav recent          carpetas donde usaste Claude Code y no están registradas
+  agentnav recent          carpetas donde usaste Claude Code o Gemini CLI y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
                            diario del día: qué le pediste a cada proyecto y cuánto trabajó
   agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque) y si origin tiene commits nuevos
@@ -55,6 +56,9 @@ USERPROFILE = os.environ.get("USERPROFILE", "")
 STANDALONE = os.path.join(USERPROFILE, ".herdr", "packages", "standalone", "current", "herdr.exe")
 CLAUDE_HOME = os.path.join(USERPROFILE, ".claude")
 CLAUDE_PROJECTS = os.path.join(CLAUDE_HOME, "projects")
+GEMINI_HOME = os.environ.get("GEMINI_CLI_HOME") or os.path.join(USERPROFILE, ".gemini")
+GEMINI_TMP = os.path.join(GEMINI_HOME, "tmp")  # <id del proyecto>\\chats\\session-<fecha>-<8 del sid>.jsonl
+GEMINI_REGISTRY = os.path.join(GEMINI_HOME, "projects.json")  # {"projects": {"<ruta en minúsculas>": "<id>"}}
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentNav")
 JOURNAL_DIR = os.path.join(STATE_DIR, "journal")
 FOCUS_LOG = os.path.join(STATE_DIR, "focus.log")  # lo escribe plugin\focus.py en cada pane.focused: "<espacio> <panel>"
@@ -64,6 +68,9 @@ DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 SHELL_KIND = "shell"
+DEFAULT_KIND = "claude"
+# Agentes con conversación que se puede retomar y orden de salida: `continue`, "fuera de Herdr" y `close` van por tipo.
+EXIT_COMMAND = {"claude": "/exit", "gemini": "/quit"}
 
 
 class AgentNavError(Exception):
@@ -232,7 +239,7 @@ def load_projects():
     for p in _read_projects_raw():
         if not isinstance(p, dict) or not p.get("name") or not p.get("path"):
             continue
-        p_kind = str(p.get("kind") or "claude")
+        p_kind = str(p.get("kind") or DEFAULT_KIND)
         p_args = _as_list(p.get("args"))
         p_cont = bool(p.get("continue", False))
         raw_agents = p.get("agents")
@@ -251,12 +258,12 @@ def _write_projects_raw(raw):
     os.replace(tmp, PROJECTS_PATH)
 
 
-def add_project(name, path):
+def add_project(name, path, kind=DEFAULT_KIND):
     """Agrega al archivo sin tocar lo que ya había (conserva claves ajenas), escritura atómica."""
     raw = _read_projects_raw()
     if any(isinstance(p, dict) and str(p.get("name", "")).lower() == name.lower() for p in raw):
         raise AgentNavError(f"ya hay un proyecto llamado {name}")
-    raw.append({"name": name, "path": path, "agents": [agent_name(name, set())], "kind": "claude", "continue": True})
+    raw.append({"name": name, "path": path, "agents": [agent_name(name, set())], "kind": kind or DEFAULT_KIND, "continue": True})
     _write_projects_raw(raw)
 
 
@@ -296,13 +303,35 @@ def _project_path(raw):
     return os.path.normpath(p)
 
 
-def cmd_new(rest):
-    """agentnav new <nombre> [ruta]: crea la carpeta, registra el proyecto y lo abre con su Claude."""
-    parts = rest.split(None, 1)
-    if not parts:
-        raise AgentNavError("uso: agentnav new <nombre> [ruta]")
-    name = _check_project_name(parts[0].strip())
-    path = _project_path(parts[1]) if len(parts) > 1 else os.path.join(new_project_base(), name)
+def _new_args(argv):
+    """Argumentos de `new`: (nombre, ruta o "", kind). --kind X, --kind=X o --<kind> (--gemini, --claude) en cualquier
+    posición; el resto, nombre y ruta (la ruta puede llevar espacios sin comillas, como antes)."""
+    words, kind = [], DEFAULT_KIND
+    it = iter(argv)
+    for w in it:
+        low = w.lower()
+        if low == "--kind":
+            kind = next(it, "").strip().lower()
+        elif low.startswith("--kind="):
+            kind = w[7:].strip().lower()
+        elif low in ("--gemini", "--claude"):
+            kind = low[2:]
+        elif low.startswith("--"):
+            raise AgentNavError(f"opción desconocida: {w} (uso: agentnav new <nombre> [ruta] [--kind gemini])")
+        else:
+            words.append(w)
+    if not kind or kind == SHELL_KIND or not re.fullmatch(r"[a-z][a-z0-9_-]*", kind):
+        raise AgentNavError(f"--kind tiene que ser un agente que Herdr conozca (claude, gemini, codex…), no '{kind}'")
+    if not words:
+        raise AgentNavError("uso: agentnav new <nombre> [ruta] [--kind gemini]")
+    return words[0], " ".join(words[1:]), kind
+
+
+def cmd_new(argv):
+    """agentnav new <nombre> [ruta] [--kind gemini]: crea la carpeta, registra el proyecto y lo abre con su agente."""
+    raw_name, raw_path, kind = _new_args(argv)
+    name = _check_project_name(raw_name.strip())
+    path = _project_path(raw_path) if raw_path else os.path.join(new_project_base(), name)
     projects = load_projects()
     taken = next((p for p in projects if _norm_path(p["path"]) == _norm_path(path)), None)
     if taken:
@@ -317,8 +346,8 @@ def cmd_new(rest):
         except OSError as e:
             raise AgentNavError(f"no pude crear {path}: {e}")
         print(f"{name}: carpeta creada en {path}")
-    add_project(name, path)
-    print(f"{name}: registrado en {PROJECTS_PATH}")
+    add_project(name, path, kind)
+    print(f"{name}: registrado en {PROJECTS_PATH} ({kind})")
     open_project(_project_or_die(name))
     if not inside_herdr():
         attach()
@@ -422,14 +451,18 @@ def _cwd_from_dir(d):
     return cwd, os.path.getmtime(files[0])
 
 
+RECENT_SKIP = ("\\appdata\\", "\\temp\\")  # carpetas que `recent` no propone (trozos de la ruta en minúsculas)
+
+
 def recent_projects(projects, limit=8):
-    """Carpetas donde corrió Claude Code que no están en el registro, de la más reciente a la más vieja."""
+    """Carpetas donde corrió Claude Code o Gemini CLI que no están en el registro, de la más reciente a la más vieja.
+    Cada una trae "kind" (el agente que la usó; si los dos, el más reciente)."""
     known = {_norm_path(p["path"]) for p in projects}
     seen, out = set(), []
     try:
         dirs = [os.path.join(CLAUDE_PROJECTS, n) for n in os.listdir(CLAUDE_PROJECTS)]
     except OSError:
-        return []
+        dirs = []
     for d in dirs:
         if not os.path.isdir(d):
             continue
@@ -437,37 +470,186 @@ def recent_projects(projects, limit=8):
         if not cwd or not os.path.isdir(cwd):
             continue
         k = _norm_path(cwd)
-        if k in known or k in seen or "\\appdata\\" in k or "\\temp\\" in k:
-            continue
-        if k == _norm_path(USERPROFILE):
+        if k in known or k in seen or any(s in k for s in RECENT_SKIP) or k == _norm_path(USERPROFILE):
             continue
         seen.add(k)
-        out.append({"path": os.path.normpath(cwd), "when": when})
+        out.append({"path": os.path.normpath(cwd), "when": when, "kind": "claude"})
+    for r in recent_gemini_projects(known, set()):  # una carpeta con los dos agentes sale una vez, con el más nuevo
+        hit = next((x for x in out if _norm_path(x["path"]) == _norm_path(r["path"])), None)
+        if hit is None:
+            out.append(r)
+        elif r["when"] > hit["when"]:
+            hit.update(r)
     out.sort(key=lambda r: -r["when"])
     return out[:limit]
 
 
-def last_herdr_session(path, exclude=()):
+def last_herdr_session(path, exclude=(), kind="claude"):
     """Id de la última conversación que recibió pedidos DENTRO de un panel de Herdr en esa carpeta, según el diario,
-    siempre que Claude todavía la guarde. Herdr retoma lo de Herdr: lo que corre en otra terminal no se toca."""
+    siempre que el agente todavía la guarde (Claude en ~/.claude/projects, Gemini en ~/.gemini/tmp). El diario no
+    anota el tipo: una sesión es de Claude o de Gemini según quién tenga el archivo. Herdr retoma lo de Herdr: lo que
+    corre en otra terminal no se toca."""
     want = _norm_path(path)
     skip = {str(x).lower() for x in exclude}
-    d = _claude_project_dirs().get(claude_project_key(path).lower())
-    if not d:
-        return None
+    if kind == "gemini":
+        shorts = {s for _, s in gemini_sessions(path) if s}
+        if not shorts:
+            return None
+
+        def stored(sid):
+            return sid if sid.lower()[:8] in shorts else None
+    else:
+        d = _claude_project_dirs().get(claude_project_key(path).lower())
+        if not d:
+            return None
+        try:
+            files = [n for n in os.listdir(d) if n.endswith(".jsonl")]
+        except OSError:
+            return None
+
+        def stored(sid):
+            return next((n[:-6] for n in files if n.lower().startswith(sid.lower())), None)
     try:
-        files = [n for n in os.listdir(d) if n.endswith(".jsonl")]
         days = sorted((n[:-4] for n in os.listdir(JOURNAL_DIR) if n.endswith(".log")), reverse=True)[:60]
     except OSError:
         return None
     for day in days:
         for e in reversed(read_journal(day)):
-            if e["event"] not in ("prompt", "stop") or not e["cwd"] or _norm_path(e["cwd"]) != want:
+            if e["event"] not in ("prompt", "stop") or not e["cwd"] or _norm_path(e["cwd"]) != want or not e["sid"]:
                 continue
-            sid = next((n[:-6] for n in files if n.lower().startswith(e["sid"].lower())), None)
+            sid = stored(e["sid"])
             if sid and sid.lower() not in skip:
                 return sid
     return None
+
+
+# ---------------------------------------------------------------- Gemini CLI: sesiones guardadas
+
+def _gemini_norm(path):
+    """Clave del registro de Gemini (ProjectRegistry.normalizePath): ruta absoluta y, en Windows, en minúsculas."""
+    return os.path.normpath(os.path.abspath(path)).lower()
+
+
+def gemini_project_hash(path):
+    """Carpeta vieja de ~/.gemini/tmp (antes del registro): SHA-256 hex de la ruta tal cual la ve Node."""
+    import hashlib
+    return hashlib.sha256(os.path.normpath(path).encode("utf-8")).hexdigest()
+
+
+@functools.lru_cache(maxsize=1)
+def _gemini_registry():
+    """{ruta normalizada: id corto} de ~/.gemini/projects.json (Gemini CLI 0.68: tmp/<id corto>, ya no el hash)."""
+    data = _read_json_file(GEMINI_REGISTRY, "projects.json de Gemini") if os.path.isfile(GEMINI_REGISTRY) else None
+    projects = (data or {}).get("projects") if isinstance(data, dict) else None
+    return {str(k).lower(): str(v) for k, v in (projects or {}).items() if v} if isinstance(projects, dict) else {}
+
+
+def gemini_project_dir(path):
+    """Carpeta de ~/.gemini/tmp de ese proyecto: la del registro; si no está, la que tenga un .project_root con esa
+    ruta; si tampoco, la del hash viejo. None si Gemini nunca corrió ahí."""
+    key = _gemini_norm(path)
+    try:
+        slug = _gemini_registry().get(key)
+    except AgentNavError:
+        slug = None
+    cands = [slug] if slug else []
+    if not cands:
+        for d, owner in gemini_project_markers():
+            if owner == key:
+                cands.append(os.path.basename(d))
+    cands += [gemini_project_hash(c) for c in (os.path.normpath(path), os.path.realpath(path))]
+    for c in cands:
+        d = os.path.join(GEMINI_TMP, c)
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def gemini_project_markers():
+    """[(carpeta de tmp, ruta dueña normalizada)] según los .project_root que Gemini deja en cada tmp/<id>."""
+    out = []
+    try:
+        names = os.listdir(GEMINI_TMP)
+    except OSError:
+        return out
+    for n in names:
+        d = os.path.join(GEMINI_TMP, n)
+        try:
+            with open(os.path.join(d, ".project_root"), encoding="utf-8", errors="replace") as f:
+                owner = f.read().strip()
+        except OSError:
+            continue
+        if owner:
+            out.append((d, _gemini_norm(owner)))
+    return out
+
+
+_GEMINI_CHAT_RE = re.compile(r"^session-.*-([0-9a-f]{8})\.jsonl?$", re.I)
+
+
+def gemini_sessions(path):
+    """Sesiones que Gemini CLI guardó para esa carpeta (tmp/<id>/chats/session-<fecha>-<8 del sid>.jsonl; las .json son
+    del formato viejo), nuevas primero: [(archivo, 8 primeros del sid en minúsculas o "")]."""
+    d = gemini_project_dir(path)
+    if not d:
+        return []
+    chats = os.path.join(d, "chats")
+    try:
+        files = [os.path.join(chats, n) for n in os.listdir(chats) if n.lower().endswith((".json", ".jsonl"))]
+    except OSError:
+        return []
+    files.sort(key=lambda f: -os.path.getmtime(f))
+    out = []
+    for f in files:
+        m = _GEMINI_CHAT_RE.match(os.path.basename(f))
+        out.append((f, m.group(1).lower() if m else ""))
+    return out
+
+
+def has_gemini_conversation(path):
+    return bool(gemini_sessions(path))
+
+
+def gemini_session_file(path, sid):
+    """El archivo de la sesión con ese id (por los 8 del nombre; el id entero está en el primer registro)."""
+    short = str(sid).lower()[:8]
+    for f, s in gemini_sessions(path):
+        if s == short:
+            return f
+    return None
+
+
+def _gemini_newest_sid(path):
+    """Id entero de la sesión más nueva de la carpeta (la que `--resume latest` elige), leído del primer registro."""
+    for f, _ in gemini_sessions(path)[:1]:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                head = fh.read(4000)
+        except OSError:
+            return None
+        m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', head)
+        return m.group(1).lower() if m else None
+    return None
+
+
+def recent_gemini_projects(known, seen):
+    """Carpetas con sesiones de Gemini que no están en el registro, por los .project_root de ~/.gemini/tmp."""
+    out = []
+    for d, owner in gemini_project_markers():
+        chats = os.path.join(d, "chats")
+        try:
+            when = max(os.path.getmtime(os.path.join(chats, n)) for n in os.listdir(chats))
+        except (OSError, ValueError):
+            continue
+        if not os.path.isdir(owner):
+            continue
+        real = os.path.normpath(os.path.realpath(owner))  # el registro guarda la ruta en minúsculas
+        k = _norm_path(real)
+        if k in known or k in seen or any(s in k for s in RECENT_SKIP) or k == _norm_path(USERPROFILE):
+            continue
+        seen.add(k)
+        out.append({"path": real, "when": when, "kind": "gemini"})
+    return out
 
 
 # ---------------------------------------------------------------- procesos de Windows (quién corre dónde)
@@ -617,23 +799,42 @@ def _under_herdr(proc, by_pid):
     return False
 
 
-def _outside_claudes(path):
-    """Los Claude Code que corren en esa carpeta fuera de Herdr (una pestaña de Windows Terminal, por ejemplo)."""
+_GEMINI_CMD_RE = re.compile(r"gemini-cli|[\\/]gemini(\.js|\.cmd)?(\"|\s|$)", re.I)
+
+
+def _is_agent_proc(p, kind, by_pid=None):
+    """El proceso es un agente de ese tipo (y no un hijo suyo del mismo tipo: un node bajo claude.exe, un worker
+    de gemini). Claude Code es claude.exe o un node con "claude" en la línea; Gemini CLI es el node que lanza
+    gemini.cmd de npm (node "…\\@google\\gemini-cli\\bundle\\gemini.js"), que se relanza a sí mismo con más memoria."""
+    name, cmd = p.get("name") or "", p.get("cmd") or ""
+    parent = (by_pid or {}).get(p.get("ppid")) or {}
+    if kind == "claude":
+        if name == "claude.exe":
+            return True
+        return name == "node.exe" and "claude" in cmd.lower() and parent.get("name") != "claude.exe"
+    if kind == "gemini":
+        return name == "node.exe" and bool(_GEMINI_CMD_RE.search(cmd)) and not (
+            parent.get("name") == "node.exe" and _GEMINI_CMD_RE.search(parent.get("cmd") or ""))
+    return False
+
+
+def _outside_agents(path, kind):
+    """Los agentes de ese tipo que corren en esa carpeta fuera de Herdr (una pestaña de Windows Terminal, por ejemplo)."""
     procs = _procs()
     by_pid = {p["pid"]: p for p in procs}
     want = _norm_path(path)
-    out = []
-    for p in procs:
-        is_claude = p["name"] == "claude.exe" or (p["name"] == "node.exe" and "claude" in p["cmd"].lower()
-                                                   and (by_pid.get(p["ppid"]) or {}).get("name") != "claude.exe")
-        if is_claude and p["cwd"] and _norm_path(p["cwd"]) == want and not _under_herdr(p, by_pid):
-            out.append(p)
-    return out
+    return [p for p in procs if _is_agent_proc(p, kind, by_pid) and p["cwd"] and _norm_path(p["cwd"]) == want
+            and not _under_herdr(p, by_pid)]
+
+
+def agents_outside_herdr(path, kind):
+    """Cuántos agentes de ese tipo corren en esa carpeta fuera de Herdr."""
+    return len(_outside_agents(path, kind))
 
 
 def claudes_outside_herdr(path):
     """Cuántos Claude Code corren en esa carpeta fuera de Herdr."""
-    return len(_outside_claudes(path))
+    return agents_outside_herdr(path, "claude")
 
 
 def newest_session(path):
@@ -648,18 +849,18 @@ def newest_session(path):
         return None
 
 
-def sids_outside_herdr(path):
-    """Conversaciones que un Claude de FUERA de Herdr tiene abiertas en esa carpeta, en minúsculas: el id de
-    `--resume X` / `-r X` de su línea de comandos; si alguno arrancó con --continue o sin id no se sabe cuál agarró,
-    así que cuenta la más nueva de la carpeta (es la que --continue elige). Un --resume sobre una de éstas pondría dos
-    Claude en el mismo .jsonl."""
+def sids_outside_herdr(path, kind="claude"):
+    """Conversaciones que un agente de FUERA de Herdr tiene abiertas en esa carpeta, en minúsculas: el id de
+    `--resume X` / `-r X` (Gemini también `--session-id X`) de su línea de comandos; si alguno arrancó con --continue,
+    `--resume latest` o sin id no se sabe cuál agarró, así que cuenta la más nueva de la carpeta (es la que esas formas
+    eligen). Un --resume sobre una de éstas pondría dos agentes en el mismo archivo."""
     out = set()
-    for p in _outside_claudes(path):
-        m = re.search(r"(?:--resume|-r)(?:=|\s+)([0-9A-Za-z-]{8,})", p.get("cmd") or "")
-        if m:
+    for p in _outside_agents(path, kind):
+        m = re.search(r"(?:--resume|-r|--session-id)(?:=|\s+)\"?([0-9A-Za-z-]{8,})", p.get("cmd") or "")
+        if m and m.group(1).lower() != "latest":
             out.add(m.group(1).lower())
         else:
-            sid = newest_session(path)
+            sid = _gemini_newest_sid(path) if kind == "gemini" else newest_session(path)
             if sid:
                 out.add(sid)
     return out
@@ -745,10 +946,38 @@ def git_text(info):
 
 # ---------------------------------------------------------------- acciones
 
+def _gemini_continue_args(a, path, say, used, others_live):
+    """Lo mismo que para Claude, con las sesiones de Gemini (~/.gemini/tmp/<id>/chats): la última que tuvo pedidos
+    dentro de Herdr en esa carpeta (`--resume <uuid>`), que no esté viva en otro panel ni en otra terminal; sin una,
+    `--resume latest` (la más nueva de la carpeta) sólo si ningún otro Gemini corre ahí. Sin sesiones guardadas, nada:
+    `--resume latest` sin sesiones termina con error."""
+    if not has_gemini_conversation(path):
+        return []
+    outside = sids_outside_herdr(path, "gemini")
+    sid = last_herdr_session(path, exclude=set(used) | outside, kind="gemini")
+    if sid:
+        used.add(sid)
+        return ["--resume", sid]
+    if outside:
+        say(f"  {a['name']}: la última sesión de Herdr acá está abierta en otra terminal; no la retomo.")
+    if others_live:
+        say(f"  {a['name']}: otro Gemini del proyecto ya está en esa carpeta; arranca una sesión nueva.")
+    elif outside:
+        say(f"  {a['name']}: hay un Gemini corriendo en esa carpeta fuera de Herdr; arranca una sesión nueva para no pisarla.")
+    else:
+        return ["--resume", "latest"]
+    return []
+
+
 def _continue_args(a, path, say, used, others_live):
-    """Qué conversación retoma un Claude con `continue`: la última que tuvo pedidos dentro de Herdr en esa carpeta
-    (--resume), que no esté viva en otro panel. Sin una, --continue sólo si ningún otro Claude corre en la carpeta:
-    --continue agarra la conversación MÁS NUEVA, que puede ser la que está abierta en otra terminal."""
+    """Qué conversación retoma un agente con `continue`. Claude: la última que tuvo pedidos dentro de Herdr en esa
+    carpeta (--resume), que no esté viva en otro panel. Sin una, --continue sólo si ningún otro Claude corre en la
+    carpeta: --continue agarra la conversación MÁS NUEVA, que puede ser la que está abierta en otra terminal.
+    Gemini: ver _gemini_continue_args. Otros tipos (codex…): sin reanudar."""
+    if a["kind"] == "gemini":
+        return _gemini_continue_args(a, path, say, used, others_live)
+    if a["kind"] != "claude":
+        return []
     outside = sids_outside_herdr(path)  # abiertas en una terminal ajena a Herdr: no se retoman
     sid = last_herdr_session(path, exclude=set(used) | outside)
     if sid:
@@ -768,9 +997,10 @@ def _continue_args(a, path, say, used, others_live):
 
 
 def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=False):
-    """Arranca un agente que Herdr conoce (claude, codex…). Devuelve True si quedó listo."""
+    """Arranca un agente que Herdr conoce (claude, gemini, codex…). Devuelve True si quedó listo.
+    `others_live`: ya corre otro agente del mismo tipo en la carpeta del proyecto (no se retoma su conversación)."""
     args = list(a["args"])
-    if a["continue"] and a["kind"] == "claude" and "--continue" not in args and "--resume" not in args:
+    if a["continue"] and not any(x in args for x in ("--continue", "--resume", "-r", "-c")):
         args += _continue_args(a, path, say, used if used is not None else set(), others_live)
     extra = f" {' '.join(args)}" if args else ""
     say(f"  {a['name']}: arrancando {a['kind']}{extra} en {pane}…")
@@ -784,7 +1014,7 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
         return True
     except AgentNavError as e:
         if "agent_not_ready" in str(e):
-            say(f"  {a['name']}: espera el diálogo de confianza de carpeta de Claude; respondelo en el panel.")
+            say(f"  {a['name']}: espera un diálogo de {a['kind']} (confianza de carpeta, login); respondelo en el panel.")
         else:
             say(f"  {a['name']}: no arrancó ({e})")
         return False
@@ -975,9 +1205,11 @@ def _idle_shell_pane(snap, wid):
     return None, None
 
 
-def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms, say, live_sids=(), others_live=False):
-    """Crea paneles y arranca los agentes de la lista. Devuelve True si todos quedaron bien."""
+def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms, say, live_sids=(), live_kinds=()):
+    """Crea paneles y arranca los agentes de la lista. Devuelve True si todos quedaron bien.
+    `live_kinds`: tipos de agente que ya corren en el espacio (el nuevo del mismo tipo no retoma su conversación)."""
     all_ok, prev_pane = True, None
+    live_kinds = set(live_kinds)
     used = set(live_sids)  # conversaciones que ya corren en algún panel: ningún agente nuevo las retoma
     for i, a in enumerate(agents):
         a = dict(a)
@@ -998,8 +1230,8 @@ def _place_agents(p, wid, agents, taken, first_pane, first_tab, start_timeout_ms
                     wait_prompt(pane, 10000)  # pwsh en frío tarda hasta ~3 s en llegar al prompt
                 all_ok &= _start_shell(a, pane, say)
             else:
-                all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say, used, others_live)
-                others_live = True  # el siguiente Claude del mismo proyecto no debe hacer --continue sobre éste
+                all_ok &= _start_herdr_agent(a, p["path"], pane, start_timeout_ms, say, used, a["kind"] in live_kinds)
+                live_kinds.add(a["kind"])  # el siguiente del mismo tipo no debe retomar la conversación de éste
             prev_pane = pane
         except AgentNavError as e:
             say(f"  {a['name']}: {e}")
@@ -1063,7 +1295,7 @@ def _open_project(p, say, start_timeout_ms):
         live = [a for a in snap["agents"] if a.get("workspace_id") == wid]
         # Sólo se reponen agentes que Herdr conoce; los paneles de shell no se distinguen de uno abierto a mano.
         missing = [a for a in wanted if a["kind"] != SHELL_KIND and not _agent_present(live, a["name"], a["kind"])]
-        # Un Claude que Herdr reanudó con otro nombre (o sin nombre) en la carpeta del proyecto también cuenta.
+        # Un agente que Herdr reanudó con otro nombre (o sin nombre) en la carpeta del proyecto también cuenta.
         named = {agent_name(a["name"], set()) for a in wanted}
         spare = [x for x in live if x.get("name") not in named and x.get("cwd") and _norm_path(x["cwd"]) == _norm_path(p["path"])]
         still = []
@@ -1080,8 +1312,8 @@ def _open_project(p, say, start_timeout_ms):
         say(f"{p['name']}: abierto; faltan {', '.join(a['name'] for a in missing)}.")
         missing = [dict(a, split=None) for a in missing]  # cada repuesto en su pestaña
         spare_pane, spare_tab = (None, None) if live else _idle_shell_pane(snap, wid)  # el panel vacío de una restauración
-        others = any(a.get("agent") == "claude" for a in live)
-        return "focused", _place_agents(p, wid, missing, taken, spare_pane, spare_tab, start_timeout_ms, say, live_sids, others)
+        kinds = {a.get("agent") for a in live if a.get("agent")}
+        return "focused", _place_agents(p, wid, missing, taken, spare_pane, spare_tab, start_timeout_ms, say, live_sids, kinds)
 
     if not os.path.isdir(p["path"]):
         raise AgentNavError(f"{p['name']}: la carpeta no existe: {p['path']}")
@@ -1137,15 +1369,16 @@ def restore_projects(projects, say=print, wait=3.0):
 
 
 def close_project(p, say=print, grace_ms=5000):
-    """Cierra el espacio del proyecto. A los Claude que están en el prompt les manda /exit primero (dispara SessionEnd).
-    A uno bloqueado o todavía arrancando no se le manda nada: Enter ahí concedería el permiso o el diálogo de confianza."""
+    """Cierra el espacio del proyecto. A los agentes que están en el prompt les manda su orden de salida primero
+    (/exit a Claude, /quit a Gemini: dispara SessionEnd). A uno bloqueado o todavía arrancando no se le manda nada:
+    Enter ahí concedería el permiso o el diálogo de confianza."""
     snap = snapshot()
     ws = find_ws(snap, p["name"])
     if not ws:
         say(f"{p['name']}: no estaba abierto.")
         return False
     wid = ws["workspace_id"]
-    claudes = [a for a in snap["agents"] if a.get("workspace_id") == wid and a.get("agent") == "claude" and a.get("pane_id")]
+    claudes = [a for a in snap["agents"] if a.get("workspace_id") == wid and a.get("agent") in EXIT_COMMAND and a.get("pane_id")]
     polite = [a for a in claudes if a.get("interactive_ready") and not a.get("launch_pending")
               and a.get("agent_status") in ("idle", "done")]
     if polite:  # releer justo antes de escribir: entre el snapshot y el /exit pudo cambiar de estado
@@ -1154,17 +1387,17 @@ def close_project(p, say=print, grace_ms=5000):
                   and not (fresh.get(a["pane_id"]) or {}).get("launch_pending")]
     for a in polite:
         try:
-            api("pane", "send-text", a["pane_id"], "/exit")
+            api("pane", "send-text", a["pane_id"], EXIT_COMMAND[a["agent"]])
             api("pane", "send-keys", a["pane_id"], "enter")
         except AgentNavError:
             pass
     if polite:
-        say(f"{p['name']}: saliendo de {len(polite)} Claude…")
+        say(f"{p['name']}: saliendo de {len(polite)} agente(s)…")
         for a in polite:  # una espera bloqueante por panel en vez de sondear el snapshot
             wait_prompt(a["pane_id"], grace_ms)
     skipped = len(claudes) - len(polite)
     if skipped:
-        say(f"{p['name']}: {skipped} Claude ocupado(s) o bloqueado(s) se cierran sin /exit.")
+        say(f"{p['name']}: {skipped} agente(s) ocupado(s) o bloqueado(s) se cierran sin despedirse.")
     api("workspace", "close", wid)
     say(f"{p['name']}: espacio {wid} cerrado.")
     return True
@@ -1419,7 +1652,7 @@ def _tab_agent(snap, wid, pane, project):
         src = max(live, key=lambda a: a.get("state_change_seq") or 0)
     registered = [a for a in (project["agents"] if project else []) if a["kind"] != SHELL_KIND]
     if src:
-        kind = src.get("agent") or "claude"
+        kind = src.get("agent") or DEFAULT_KIND
         base = re.sub(r"-\d+$", "", src.get("name") or "") or kind
         # Los argumentos los hereda del agente registrado con ese nombre (o del primero de ese tipo), si lo hay.
         reg = next((a for a in registered if a["name"] == base), None) or next((a for a in registered if a["kind"] == kind), None)
@@ -1627,7 +1860,7 @@ def _adopt_origin(pool, pid, trail, layout=None):
 
 def cmd_recent():
     for r in recent_projects(load_projects(), limit=20):
-        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['when']))}  {r['path']}")
+        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['when']))}  {r.get('kind', 'claude'):<7} {r['path']}")
     return 0
 
 
@@ -2433,6 +2666,73 @@ def cmd_update(argv, say=print):
 
 # ---------------------------------------------------------------- doctor
 
+# Hooks nuestros en el settings.json de Gemini CLI: evento → fragmento del "command" (lo registra el instalador
+# -ConGemini, con el mismo hook agentnav-state.ps1 que Claude, parametrizado por tipo).
+GEMINI_HOOK_EVENTS = (("SessionStart", 'agentnav-state.ps1" start gemini'), ("BeforeAgent", 'agentnav-state.ps1" prompt gemini'),
+                      ("AfterAgent", 'agentnav-state.ps1" stop gemini'), ("SessionEnd", 'agentnav-state.ps1" end gemini'),
+                      ("Notification", 'agentnav-state.ps1" notify gemini'), ("AfterTool", 'agentnav-unblock.cmd" gemini'))
+
+
+def gemini_version(timeout=20):
+    """(ruta del lanzador, versión) de Gemini CLI, o (None, "") si no está en el PATH. Es un .cmd de npm que levanta
+    node: tarda un par de segundos."""
+    exe = shutil.which("gemini")
+    if not exe:
+        return None, ""
+    try:
+        cp = subprocess.run([exe, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout, creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return exe, ""
+    lines = (cp.stdout or cp.stderr).strip().splitlines()
+    return exe, (lines[-1].strip() if lines else "")
+
+
+def gemini_hook_status(settings):
+    """Qué eventos de GEMINI_HOOK_EVENTS tienen nuestro hook en un settings.json de Gemini (misma lectura que para
+    el de Claude: hooks.<Evento>[].hooks[].command). Devuelve (registrados, faltantes)."""
+    hooks = (settings or {}).get("hooks") or {}
+    have, missing = [], []
+    for ev, needle in GEMINI_HOOK_EVENTS:
+        blocks = hooks.get(ev) or []
+        found = any(needle in str(h.get("command", "")) for b in blocks if isinstance(b, dict)
+                    for h in (b.get("hooks") or []) if isinstance(h, dict))
+        (have if found else missing).append(ev)
+    return have, missing
+
+
+def gemini_checks(projects=None):
+    """Bloque "Gemini CLI" de doctor: sólo si algún proyecto/agente es gemini o gemini está en el PATH. Lista de
+    (ok, texto) como las demás comprobaciones."""
+    try:
+        projects = load_projects() if projects is None else projects
+    except AgentNavError:
+        projects = []
+    uses = sorted({p["name"] for p in projects for a in p["agents"] if a["kind"] == "gemini"})
+    exe, ver = gemini_version()
+    if not exe and not uses:
+        return []
+    out = []
+    if exe:
+        out.append((True, f"Gemini CLI: {exe} ({ver or 'versión desconocida'})"))
+    else:
+        out.append((False, f"Gemini CLI no está en el PATH y lo usan {', '.join(uses)}: npm install -g @google/gemini-cli"))
+    settings_path = os.path.join(GEMINI_HOME, "settings.json")
+    try:
+        settings = _read_json_file(settings_path, "settings.json de Gemini") or {}
+        have, missing = gemini_hook_status(settings)
+        if not missing:
+            out.append((True, f"settings.json de Gemini: hooks {', '.join(have)}"))
+        else:
+            out.append((None if not uses else False,
+                        f"settings.json de Gemini: faltan los hooks {', '.join(missing)} (el estado de cada Gemini no llega a Herdr): installer\\instalar.ps1 -ConGemini"))
+    except AgentNavError as e:
+        out.append((None if not uses else False, str(e)))
+    if uses:
+        out.append((None, f"proyectos con Gemini: {', '.join(uses)} ('continue' retoma por --resume la sesión de ~/.gemini/tmp)"))
+    return out
+
+
 def cmd_doctor():
     results = []  # (True|False|None, texto)  None = aviso, no cuenta como problema
 
@@ -2564,8 +2864,9 @@ def cmd_doctor():
             elif names is not None:
                 check(True, "servidor de Herdr con entorno limpio (sin CLAUDE*)")
         for p in projects:
-            if any(a["kind"] == "claude" and a.get("continue") for a in p["agents"]) and claudes_outside_herdr(p["path"]):
-                check(None, f"  {p['name']}: hay un Claude corriendo en esa carpeta fuera de Herdr; 'continue' no lo va a pisar, arranca uno nuevo")
+            for kind in sorted({a["kind"] for a in p["agents"] if a["kind"] in EXIT_COMMAND and a.get("continue")}):
+                if agents_outside_herdr(p["path"], kind):
+                    check(None, f"  {p['name']}: hay un {kind} corriendo en esa carpeta fuera de Herdr; 'continue' no lo va a pisar, arranca uno nuevo")
             if not os.path.isdir(p["path"]):
                 check(False, f"  {p['name']}: la carpeta no existe: {p['path']}")
             if p["agents"] and p["agents"][0]["split"]:
@@ -2578,6 +2879,8 @@ def cmd_doctor():
         check(None, f"avisos ntfy: {'topic configurado' if topic else 'apagados (settings.json → ntfy.topic)'}")
     except AgentNavError as e:
         check(False, str(e))
+    for ok, text in gemini_checks():
+        check(ok, text)
     # Arranque, Python, Windows Terminal
     check(os.path.isfile(vbs), "arranque automático del servidor (Herdr server.vbs en Inicio)" if os.path.isfile(vbs) else f"falta {vbs}")
     if os.path.isfile(vbs) and os.path.isfile(repo_vbs) and not _same_file(vbs, repo_vbs):
@@ -2878,7 +3181,7 @@ def main(argv):
     if cmd == "app":
         return cmd_app()
     if cmd in ("new", "nuevo"):
-        return cmd_new(rest)
+        return cmd_new(argv[1:])
     print(__doc__)
     return 0 if cmd in ("help", "-h", "--help") else 2
 

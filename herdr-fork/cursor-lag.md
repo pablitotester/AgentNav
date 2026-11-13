@@ -69,11 +69,13 @@ retención) contra `pty.request_render`; muchos "delayed" por ráfaga = la reten
 
 ## Propuesta para el fork: la retención, configurable
 
-Estado al 13/11 17:05: aplicada en el fork como rama **`cursor-settle`** (commit `fdc3a233`, sobre `agentnav` =
-v0.9.5 + parche de temas y árbol), pusheada. Falta llevarla a `agentnav` (el workflow sólo compila esa rama; el push a
-`agentnav` dispara el build y **reemplaza** el release `agentnav-v0.9.5`, por eso lo hace Pablo a mano) y esperar el
-build. `herdr-fork\cursor-settle.patch` es ahora el commit real (`git format-patch`), no un borrador. Comandos para
-Pablo, cualquiera de los tres:
+Estado al 13/11 18:40: aplicada en el fork como rama **`cursor-settle`** (commit `fdc3a233`, sobre `agentnav` =
+v0.9.5 + parche de temas y árbol); Pablo movió `agentnav` a ese commit por la API y disparó el build a mano (mover la
+rama por la API no dispara el evento push). **Build OK**: run 43509825112, release `agentnav-v0.9.5` reemplazado a las
+21:38 UTC con `herdr.exe` SHA-256 `8813fa9baf95734e932611ebf94458758711bfe309308e26a73a000ce4ba0177`. Es el exe que
+instala `agentnav herdr-sync` (todavía no instalado: cierra sesiones). Rama `cron-semanal` (`b8d9e645`) encima, con
+el cron bajado a los lunes porque GitHub pausó Actions en el fork por consumo. `herdr-fork\cursor-settle.patch` es el
+commit real (`git format-patch`). Los comandos que se usaron, por si hay que repetir el ciclo con otro commit:
 
 ```powershell
 # a) con un clon del fork

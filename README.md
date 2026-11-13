@@ -47,7 +47,7 @@ agentnav adopt               lo corre el plugin de Herdr cuando nace una pestañ
 agentnav pick                el selector (lo corre el popup de Herdr)
 agentnav recent              carpetas donde usaste Claude Code o Gemini CLI y no están registradas (con cuál)
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
-agentnav doctor              verifica Herdr, hooks, config, arranque, registro; avisa si origin tiene commits nuevos
+agentnav doctor              verifica Herdr, hooks, config, shell de los paneles, arranque, registro; avisa si origin tiene commits nuevos
 agentnav update [--check]    git pull --ff-only de origin y re-copia hooks, arranque y config de Herdr (con respaldo); --check sólo avisa (sale 10 si hay nuevos)
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
 agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
@@ -270,6 +270,19 @@ directo) etiqueta a todos los agentes vivos al arrancar, y `agentnav labels` lo 
 - `agentnav open` desde fuera de Herdr no abre otra pestaña si ya hay un cliente de Herdr abierto; `agentnav attach` sí.
 - El servidor de Herdr retiene como directorio actual la carpeta desde la que se lo arrancó: levantalo con `agentnav up`
   (o el `.vbs` de inicio), nunca desde la carpeta de un proyecto. `doctor` lo verifica.
+
+## Velocidad de la consola
+
+Si al tipear rápido el cursor parece ir atrás del texto, el shell no es la causa. Medido en un panel de Herdr con
+`pane send-text` (una ráfaga de 200 teclas en una sola escritura, mediana de 5): pwsh 7.6.9 con PSReadLine 2.4.5 y
+sus opciones de fábrica (predicción `HistoryAndPlugin`, vista en línea) tarda lo mismo con la predicción apagada, con
+vista en lista o con sólo historial, 77 ms en todos los casos contra 33 ms sin PSReadLine, y 33 ms es el piso de la
+medición (una ida y vuelta de la CLI de Herdr). Son ~0,2 ms por tecla, muy por debajo de lo que tipea una persona;
+Windows PowerShell 5.1 con PSReadLine 2.0.0 da los mismos números. El perfil que deja el instalador tiene sólo el alias
+`agentnav`: nada que corra por tecla (oh-my-posh, posh-git, Terminal-Icons sí lo hacen; si los tenés en tu perfil,
+probá sin ellos). Lo que sí importa es que Herdr abra el shell pedido: `doctor` avisa si `default_shell` dice `pwsh` y
+no está instalado (Herdr abre Windows PowerShell 5.1, más lento al arrancar) y muestra la versión de PSReadLine. Si
+querés apagar la predicción igual, es `Set-PSReadLineOption -PredictionSource None` en tu perfil; no lo pone AgentNav.
 
 ## Requisitos
 

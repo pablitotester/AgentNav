@@ -578,5 +578,27 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.EXIT_COMMAND, {"claude": "/exit", "gemini": "/quit"})
 
 
+class Consola(unittest.TestCase):
+    def test_shell_check(self):
+        ok, text = an.shell_check("pwsh", r"C:\x\pwsh.exe", ("7.6.9", "2.4.5"))
+        self.assertTrue(ok)
+        self.assertEqual(text, "shell de los paneles: pwsh 7.6.9 (PSReadLine 2.4.5)")
+        ok, text = an.shell_check("pwsh", None)
+        self.assertFalse(ok)
+        self.assertIn("Windows PowerShell 5.1", text)
+        ok, text = an.shell_check("powershell.exe", r"C:\w\powershell.exe", ("5.1.19041.6456", "2.0.0"))
+        self.assertIsNone(ok)  # aviso, no problema: lo medido dice que PSReadLine no es el cuello
+        self.assertIn("PSReadLine viejo", text)
+        self.assertEqual(an.shell_check("", None), (None, "config.toml sin terminal.default_shell: Herdr abre su shell por defecto"))
+        self.assertEqual(an.shell_check("cmd", r"C:\Windows\system32\cmd.exe")[0], True)
+        self.assertEqual(an.shell_check("bash", None)[0], False)
+        self.assertTrue(an.shell_check("pwsh", r"C:\x\pwsh.exe", ("", ""))[0])  # sin versiones leídas sigue siendo ok
+
+    def test_shell_versions_tolera_fallos(self):
+        self.assertEqual(an.shell_versions(r"C:\no\existe\pwsh.exe"), ("", ""))
+        self.assertEqual(an._ver_tuple("2.4.5"), (2, 4, 5))
+        self.assertEqual(an._ver_tuple("5.1.19041.6456"), (5, 1, 19041))
+
+
 if __name__ == "__main__":
     unittest.main()

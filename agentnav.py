@@ -19,7 +19,7 @@ Uso:
   agentnav recent          carpetas donde usaste Claude Code o Gemini CLI y no están registradas
   agentnav hoy [ayer|AAAA-MM-DD]
                            diario del día: qué le pediste a cada proyecto y cuánto trabajó
-  agentnav doctor          verifica la instalación completa (Herdr, hooks, config, arranque) y si origin tiene commits nuevos
+  agentnav doctor          verifica la instalación completa (Herdr, hooks, config, shell, arranque) y si origin tiene commits nuevos
   agentnav update [--check]
                            trae lo nuevo de origin (git pull --ff-only) y re-copia hooks, arranque y config de Herdr
                            a su lugar (config con respaldo). --check sólo avisa: sale 0 al día, 10 si hay commits nuevos
@@ -2824,6 +2824,46 @@ def gemini_checks(projects=None):
     return out
 
 
+def shell_versions(exe, timeout=15):
+    """(versión de PowerShell, versión de PSReadLine) de ese pwsh.exe/powershell.exe; "" lo que no se pueda leer.
+    Un arranque sin perfil (~0,3 s), sólo en doctor."""
+    try:
+        cp = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command",
+                             '"$($PSVersionTable.PSVersion)|$((Get-Module PSReadLine -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version)"'],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        parts = (cp.stdout or "").strip().splitlines()[-1].split("|") if (cp.stdout or "").strip() else []
+    except (OSError, subprocess.TimeoutExpired):
+        parts = []
+    return (parts[0].strip() if parts else ""), (parts[1].strip() if len(parts) > 1 else "")
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v))[:3])
+
+
+def shell_check(shell, exe, versions=("", "")):
+    """Comprobación de doctor del shell que abre cada panel (terminal.default_shell): que exista (si pide pwsh y
+    falta, Herdr abre lo que haya: Windows PowerShell 5.1) y, en PowerShell, qué PSReadLine tiene. Devuelve (ok, texto).
+    Lo medido: el eco de las teclas no depende de PSReadLine ni de sus opciones (ver README), así que una versión vieja
+    es sólo un aviso."""
+    s = os.path.basename(str(shell or "").strip().strip('"')).lower()
+    if s.endswith(".exe"):
+        s = s[:-4]
+    if not s:
+        return None, "config.toml sin terminal.default_shell: Herdr abre su shell por defecto"
+    if not exe:
+        if s == "pwsh":
+            return False, "default_shell = pwsh pero pwsh no está en el PATH: Herdr abre Windows PowerShell 5.1 en su lugar (winget install Microsoft.PowerShell)"
+        return False, f"default_shell = {shell} pero no está en el PATH"
+    if s not in ("pwsh", "powershell"):
+        return True, f"shell de los paneles: {shell} ({exe})"
+    ps, psrl = versions
+    text = f"shell de los paneles: {s} {ps or '?'} (PSReadLine {psrl or '?'})"
+    if psrl and _ver_tuple(psrl) < (2, 3):
+        return None, text + ": PSReadLine viejo; el actual (2.4) trae predicción y vista en lista, opcional: Install-Module PSReadLine -Scope CurrentUser"
+    return True, text
+
+
 def cmd_doctor():
     results = []  # (True|False|None, texto)  None = aviso, no cuenta como problema
 
@@ -2875,6 +2915,10 @@ def cmd_doctor():
                       else f"config.toml difiere de {repo_cfg} (agentnav update lo copia, con respaldo y conservando el tema)")
     except OSError:
         check(False, f"no encuentro {cfg_path}")
+    # El shell de cada panel: que exista el que pide el config y qué PSReadLine trae
+    sh = default_shell()
+    exe = shutil.which(sh) if sh else None
+    check(*shell_check(sh, exe, shell_versions(exe) if exe and os.path.basename(exe).lower() in ("pwsh.exe", "powershell.exe") else ("", "")))
     # Plugin de Herdr (gancho tab.created → agentnav adopt)
     try:
         plugins = api("plugin", "list", "--json").get("plugins") or []

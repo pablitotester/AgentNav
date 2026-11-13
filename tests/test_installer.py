@@ -78,6 +78,49 @@ class HooksDeClaude(unittest.TestCase):
         self.assertIsInstance(new["hooks"], dict)
 
 
+class HooksDeGemini(unittest.TestCase):
+    EVENTS = ["SessionStart", "BeforeAgent", "AfterAgent", "SessionEnd", "Notification", "AfterTool"]
+
+    def test_desde_cero(self):
+        new, added = cfg.merge_gemini_hooks(None, HOOKS)
+        self.assertEqual(added, self.EVENTS)
+        self.assertEqual(_commands(new, "BeforeAgent"),
+                         [f'powershell -NoProfile -ExecutionPolicy Bypass -File "{HOOKS}\\agentnav-state.ps1" prompt gemini'])
+        self.assertEqual(_commands(new, "SessionStart")[0].split('" ')[1], "start gemini")
+        self.assertEqual(_commands(new, "AfterTool"), [f'& "{HOOKS}\\agentnav-unblock.cmd" gemini'])  # corre en pwsh -Command
+        for ev in self.EVENTS:
+            self.assertNotIn("matcher", new["hooks"][ev][0], ev)  # ciclo de vida: matcher exacto, queremos todos
+            h = new["hooks"][ev][0]["hooks"][0]
+            self.assertEqual((h["type"], h["timeout"]), ("command", 10000), ev)  # Gemini cuenta en ms
+            self.assertTrue(h["name"].startswith("agentnav-"), ev)
+        self.assertEqual(new["hooks"]["AfterTool"][0]["hooks"][0]["name"], "agentnav-unblock")
+
+    def test_idempotente_y_respeta_lo_ajeno(self):
+        base = {
+            "mcpServers": {"x": {"command": "node"}},
+            "hooks": {"BeforeTool": [{"matcher": "write_file", "hooks": [{"type": "command", "command": "node otro.js"}]}],
+                      "SessionEnd": [{"matcher": "exit", "hooks": [{"type": "command", "command": "echo chau"}]}]},
+        }
+        once, added1 = cfg.merge_gemini_hooks(base, HOOKS)
+        twice, added2 = cfg.merge_gemini_hooks(once, HOOKS)
+        self.assertEqual(len(added1), 6)
+        self.assertEqual(added2, [])
+        self.assertEqual(once, twice)
+        self.assertEqual(once["mcpServers"], base["mcpServers"])
+        self.assertEqual(_commands(once, "BeforeTool"), ["node otro.js"])
+        self.assertEqual(_commands(once, "SessionEnd")[0], "echo chau")
+        self.assertEqual(len(once["hooks"]["SessionEnd"]), 2)
+        self.assertNotIn("BeforeAgent", base["hooks"])
+
+    def test_claude_no_cambia(self):
+        """El registro de Claude sigue sin el segundo argumento: lo que doctor y los settings ya instalados esperan."""
+        new, _ = cfg.merge_claude_hooks({}, HOOKS)
+        for ev in new["hooks"]:
+            for c in _commands(new, ev):
+                self.assertFalse(c.endswith(" claude"), c)
+                self.assertNotIn("name", new["hooks"][ev][0]["hooks"][0])
+
+
 class SettingsDeAgentNav(unittest.TestCase):
     EX = {"ntfy": {"topic": "", "server": "https://ntfy.sh"}, "journal_days": 90, "herdr_fork": {"repo": ""}}
 
@@ -119,6 +162,21 @@ class MainConArchivos(unittest.TestCase):
             self.assertEqual(len(data["hooks"]), 5)
             self.assertTrue(any(n.startswith("settings.json.bak-agentnav-") for n in os.listdir(d)))
             self.assertEqual(_main(["claude-hooks", p, HOOKS]), 0)
+
+    def test_gemini_hooks_escribe_backup_y_respeta_mcp(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "settings.json")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"mcpServers": {"ñandú": {"command": "node"}}, "hooks": {"BeforeTool": []}}, f)
+            self.assertEqual(_main(["gemini-hooks", p, HOOKS]), 0)
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["mcpServers"]["ñandú"]["command"], "node")
+            self.assertEqual(len(data["hooks"]), 7)
+            self.assertTrue(any(n.startswith("settings.json.bak-agentnav-") for n in os.listdir(d)))
+            self.assertEqual(_main(["gemini-hooks", p, HOOKS]), 0)
+            with open(p, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), data)
 
     def test_json_invalido_no_se_toca(self):
         with tempfile.TemporaryDirectory() as d:

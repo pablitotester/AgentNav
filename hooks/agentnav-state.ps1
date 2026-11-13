@@ -1,13 +1,21 @@
-﻿# AgentNav — reporta el estado real de Claude Code al panel de Herdr que lo aloja, lleva el diario y avisa al teléfono.
-# Vive al lado de herdr-agent-state.ps1 (que Herdr gestiona y sólo reporta el id de sesión).
-# Uso (desde ~/.claude/settings.json):  agentnav-state.ps1 prompt|stop|end|notify|unblock
-#   prompt   UserPromptSubmit → working (mensaje = el pedido)      + diario + marca "working\<sid>"
-#   notify   Notification     → blocked (permission_prompt) / idle  + marca "blocked\<sid>" + aviso ntfy
-#   unblock  PostToolUse      → si había marca "blocked", vuelve a working (agentnav-unblock.cmd sólo lo lanza si existe
-#                               la marca de ESA sesión, por CLAUDE_CODE_SESSION_ID; blocked.flag es el respaldo sin env)
-#   stop     Stop             → idle                                 + diario + aviso ntfy si el turno fue largo
-# En prompt, stop y notify también pone la etiqueta del panel ("<agente> · <tarea>", ver Pane-Label); SessionEnd la borra.
-#   end      SessionEnd       → release-agent                        + limpia marcas (no en /clear: el panel sigue vivo)
+﻿# AgentNav — reporta el estado real del agente (Claude Code o Gemini CLI) al panel de Herdr que lo aloja, lleva el
+# diario y avisa al teléfono. Vive al lado de herdr-agent-state.ps1 (que Herdr gestiona y sólo reporta el id de sesión
+# de Claude).
+# Uso:  agentnav-state.ps1 prompt|stop|end|notify|unblock|start [claude|gemini]   (segundo argumento: tipo de agente,
+#       "claude" si falta; Claude lo registra sin él desde ~/.claude/settings.json, Gemini con "gemini" desde
+#       ~/.gemini/settings.json). Eventos de Claude Code (a la izquierda) y de Gemini CLI (a la derecha):
+#   start    —                / SessionStart → idle + id de sesión  (para Claude lo hace el hook de Herdr)
+#   prompt   UserPromptSubmit / BeforeAgent  → working (mensaje = el pedido)      + diario + marca "working\<sid>"
+#   notify   Notification     / Notification → blocked (permission_prompt, ToolPermission) / idle (idle_prompt)
+#                                               + marca "blocked\<sid>" + aviso ntfy
+#   unblock  PostToolUse      / AfterTool    → si había marca "blocked", vuelve a working (agentnav-unblock.cmd sólo lo
+#                               lanza si existe la marca de ESA sesión, por CLAUDE_CODE_SESSION_ID o GEMINI_SESSION_ID;
+#                               blocked.flag es el respaldo sin env)
+#   stop     Stop             / AfterAgent   → idle                  + diario + aviso ntfy si el turno fue largo
+# En start, prompt, stop y notify también pone la etiqueta del panel ("<agente> · <tarea>", ver Pane-Label); SessionEnd la borra.
+#   end      SessionEnd       / SessionEnd   → release-agent         + limpia marcas (no en /clear: el panel sigue vivo)
+# Los dos agentes mandan el mismo JSON de base por stdin (session_id, cwd, prompt, reason, notification_type, message);
+# lo que difiere se resuelve adentro (ToolPermission trae la herramienta en details.tool_name).
 # Siempre sale con 0 y nunca escribe en stdout: un hook que falla no debe molestar a Claude.
 # Archivo guardado como UTF-8 CON BOM: PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252 y rompe los acentos.
 # Usa API .NET en vez de cmdlets de proveedor (Test-Path, Get-ChildItem, Add-Content…): inicializar el proveedor
@@ -16,11 +24,13 @@
 #   - Stop no dispara si interrumpís el turno con Esc: queda "working" hasta el idle_prompt (~60 s).
 #   - Denegar un permiso no genera PostToolUse: queda "blocked" hasta el Stop de ese turno.
 
-param([string]$Action = "")
+param([string]$Action = "", [string]$AgentKind = "claude")
 
 if ($env:HERDR_ENV -ne "1") { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
-if ($Action -notin @("prompt", "stop", "end", "notify", "unblock")) { exit 0 }
+if ($Action -notin @("prompt", "stop", "end", "notify", "unblock", "start")) { exit 0 }
+# El tipo va tal cual a `herdr pane report-agent --agent` y al nombre del log: sólo un identificador en minúsculas.
+if ($AgentKind -notmatch '^[a-z][a-z0-9_-]{0,31}$') { exit 0 }
 
 # El orden de los reportes lo decide el momento en que llegó el evento, no cuánto tardó el hook en procesarlo.
 $seq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -74,8 +84,9 @@ if ([string]::IsNullOrWhiteSpace($sid)) { $sid = "sin-sesion" }
 $sidShort = if ($sid.Length -gt 8) { $sid.Substring(0, 8) } else { $sid }
 $sidFile = ($sid -replace '[^A-Za-z0-9_-]', '_')
 $cwd = if ($payload) { [string]$payload.cwd } else { "" }
-$projectName = if ($cwd) { [IO.Path]::GetFileName($cwd.TrimEnd('\', '/')) } else { "Claude" }
-if (-not $projectName) { $projectName = "Claude" }
+$agentLabel = if ($AgentKind -eq "claude") { "Claude" } else { $AgentKind }
+$projectName = if ($cwd) { [IO.Path]::GetFileName($cwd.TrimEnd('\', '/')) } else { $agentLabel }
+if (-not $projectName) { $projectName = $agentLabel }
 
 # [IO.Path]::Combine y no Join-Path: el cmdlet cuesta ~3 ms por llamada en PowerShell 5.1.
 $stateDir = [IO.Path]::Combine($env:LOCALAPPDATA, "AgentNav")
@@ -231,7 +242,8 @@ function Report-Herdr([string[]]$cli) {
 # Etiqueta del panel: "<agente> · <tarea>" en el borde superior (pane report-metadata --title; Herdr la recorta si no
 # entra). El nombre es el que Herdr le dio al agente, el mismo de la barra lateral; la tarea es el título de terminal
 # que Claude Code escribe solo a medida que avanza la conversación (terminal_title_stripped) y, mientras siga en
-# "Claude Code" (conversación nueva), el principio del último pedido. Una llamada a `agent list` (~50 ms) y una al
+# "Claude Code" (conversación nueva), el principio del último pedido. Gemini CLI no resume la conversación en el
+# título, así que para él va el último pedido siempre que haya uno. Una llamada a `agent list` (~50 ms) y una al
 # reporte; si Herdr todavía no detectó el agente, no se pone nada y el próximo evento lo hace.
 function Pane-Label([string]$hint) {
     try {
@@ -242,7 +254,7 @@ function Pane-Label([string]$hint) {
         $name = [string]$me.name
         if (-not $name) { $name = [string]$me.agent }
         $task = [string]$me.terminal_title_stripped
-        if (-not $task -or $task -eq "Claude Code") { $task = $hint }
+        if (-not $task -or $task -in @("Claude Code", "Gemini", "Gemini CLI") -or ($AgentKind -ne "claude" -and $hint)) { $task = $hint }
         # El borde se ve en cualquier captura: un pedido que traiga algo con pinta de clave no va.
         if ($task -match '(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|eyJ[A-Za-z0-9_-]{10,}|[A-Fa-f0-9]{32,}|-----BEGIN|authorization\s*:|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])') { $task = "" }
         $task = Clean-Message $task 60
@@ -261,6 +273,13 @@ $release = $false
 $syncFlag = $false  # sólo cuando una marca blocked pudo aparecer o desaparecer: el prompt es el evento que espera el usuario
 $taskHint = Clean-Message (Read-Marker $workingFile) 60  # último pedido, por si Claude aún no puso título a la conversación
 switch ($Action) {
+    "start" {
+        # Sesión nueva, retomada o /clear (payload.source): el agente está en el prompt, sin nada pendiente.
+        $state = "idle"
+        Remove-Marker $workingFile
+        Remove-Marker $blockedFile
+        Journal "start" ([string]$payload.source)
+    }
     "prompt" {
         $state = "working"
         $full = [string]$payload.prompt
@@ -291,16 +310,19 @@ switch ($Action) {
         Journal "stop" ("$elapsed")
     }
     "notify" {
-        $kind = [string]$payload.notification_type
-        if ($kind -eq "permission_prompt") {
+        $ntype = [string]$payload.notification_type
+        if ($ntype -in @("permission_prompt", "ToolPermission")) {  # Claude Code / Gemini CLI
             $state = "blocked"
             $raw = [string]$payload.message
             $m = Clean-Message $raw 70
             $message = if ($m) { "pide permiso: $m" } else { "pide permiso" }
-            $tool = if ($raw -match 'to use (\S+)') { $Matches[1] } else { "" }
+            # Gemini trae la herramienta en details.tool_name; Claude sólo en el texto ("… permission to use Bash").
+            $tool = ""
+            try { if ($payload.details -and $payload.details.tool_name) { $tool = [string]$payload.details.tool_name } } catch { }
+            if (-not $tool -and $raw -match 'to use (\S+)') { $tool = $Matches[1] }
             Write-Marker $blockedFile ("tool=$tool`n$message")
             Journal "blocked" $message
-        } elseif ($kind -eq "idle_prompt") {
+        } elseif ($ntype -eq "idle_prompt") {
             $state = "idle"
             Remove-Marker $blockedFile  # Esc sobre un permiso no genera Stop: la marca quedaría para siempre
             Remove-Marker $workingFile
@@ -313,7 +335,7 @@ switch ($Action) {
         Journal "end" ([string]$payload.reason)
     }
 }
-if ($syncFlag -or $Action -ne "prompt") { Sync-BlockedFlag }
+if ($syncFlag -or $Action -notin @("prompt", "start")) { Sync-BlockedFlag }
 if ($Action -in @("stop", "end")) { Prune-Markers }  # fuera del camino del prompt, que es el que espera el usuario
 if ($Action -eq "end") { Prune-Journal }
 
@@ -321,13 +343,21 @@ $result = ""
 try {
     if ($Action -eq "end") {
         if ($release) {
-            $result = Report-Herdr @("pane", "release-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", "claude", "--seq", "$seq")
+            $result = Report-Herdr @("pane", "release-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", $AgentKind, "--seq", "$seq")
             $null = Report-Herdr @("pane", "report-metadata", $env:HERDR_PANE_ID, "--source", "agentnav", "--clear-title")
         }
     } else {
-        $cli = @("pane", "report-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", "claude", "--state", $state, "--seq", "$seq")
+        $cli = @("pane", "report-agent", $env:HERDR_PANE_ID, "--source", "agentnav", "--agent", $AgentKind, "--state", $state, "--seq", "$seq")
         # Un solo token "--message=texto": si el prompt empieza con "-" (p. ej. "--help"), separado se perdería el reporte.
         if ($message) { $cli += @("--message=$message") }
+        if ($Action -eq "start" -and $sid -ne "sin-sesion") {
+            # Id de sesión (y transcript) del agente, como hace el hook de Herdr para Claude: así `agent list` lo trae.
+            $cli += @("--agent-session-id", $sid)
+            $tp = [string]$payload.transcript_path
+            if ($tp) { $cli += @("--agent-session-path", $tp) }
+            # Y el comando que reanuda esa sesión si Herdr se reinicia (gemini --resume <id>; Claude lo tiene de fábrica).
+            if ($AgentKind -eq "gemini") { $cli += @("--", "gemini", "--resume", $sid) }
+        }
         $result = Report-Herdr $cli
         # La etiqueta va después del estado, no en unblock (corre por cada herramienta) y no si Herdr acaba de colgarse
         # (otros 4 s de espera pasarían el tope de 10 s del hook).
@@ -342,7 +372,8 @@ elseif ($Action -eq "stop") { $extra += Notify-Phone "done" "$projectName termin
 # Traza mínima, una línea por evento. Se recorta a 200 líneas sólo cuando pasa de 100 KB.
 try {
     $logPath = [IO.Path]::Combine($stateDir, "hook.log")
-    $line = "{0} {1} sid={2} action={3} state={4} msg=""{5}"" -> {6}{7}" -f [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"), $env:HERDR_PANE_ID, $sidShort, $Action, $state, $message, $result, $extra
+    $actionTag = if ($AgentKind -eq "claude") { $Action } else { "$Action/$AgentKind" }
+    $line = "{0} {1} sid={2} action={3} state={4} msg=""{5}"" -> {6}{7}" -f [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"), $env:HERDR_PANE_ID, $sidShort, $actionTag, $state, $message, $result, $extra
     Append-Line $logPath $line
     if ([IO.File]::Exists($logPath) -and (New-Object IO.FileInfo($logPath)).Length -gt 100KB) {
         With-JournalLock {  # el recorte lee y reescribe: sin el lock se tragaba la línea que otro hook estaba agregando

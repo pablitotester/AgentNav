@@ -4,6 +4,11 @@
         Registra los cinco hooks de AgentNav (UserPromptSubmit, Stop, SessionEnd, Notification, PostToolUse)
         sin tocar lo demás que haya en el archivo. Idempotente: lo que ya está registrado no se repite.
 
+    py -I configurar.py gemini-hooks <settings.json de Gemini (~/.gemini)> <carpeta de hooks>
+        Lo mismo para Gemini CLI: los mismos dos archivos de hook con el argumento "gemini", en sus seis eventos
+        (SessionStart, BeforeAgent, AfterAgent, SessionEnd, Notification, AfterTool). El archivo lo comparte con
+        otras herramientas (Antigravity): se respeta todo lo ajeno y queda un .bak-agentnav-<fecha>.
+
     py -I configurar.py agentnav-settings <settings.json de AgentNav> <settings.example.json> <repo del fork>
         Crea settings.json desde el ejemplo si no existe, y deja herdr_fork.repo apuntando al fork con los temas.
         Si ya existe sólo completa herdr_fork.repo cuando está vacío; ntfy y lo demás no se tocan.
@@ -23,12 +28,25 @@ HOOK_EVENTS = (
     ("Notification", "permission_prompt|idle_prompt", "agentnav-state.ps1", "notify"),
     ("PostToolUse", None, "agentnav-unblock.cmd", ""),
 )
+# Gemini CLI: mismos hooks, segundo argumento "gemini". Sin matcher: en los eventos de ciclo de vida es texto exacto
+# (SessionStart "startup"/"resume"/"clear", SessionEnd "exit"/…), y queremos todos. Su timeout va en milisegundos.
+GEMINI_HOOK_EVENTS = (
+    ("SessionStart", None, "agentnav-state.ps1", "start"),
+    ("BeforeAgent", None, "agentnav-state.ps1", "prompt"),
+    ("AfterAgent", None, "agentnav-state.ps1", "stop"),
+    ("SessionEnd", None, "agentnav-state.ps1", "end"),
+    ("Notification", None, "agentnav-state.ps1", "notify"),
+    ("AfterTool", None, "agentnav-unblock.cmd", ""),
+)
 
 
-def hook_command(hooks_dir, script, arg):
+def hook_command(hooks_dir, script, arg, kind=""):
     path = os.path.join(hooks_dir, script)
+    tail = " ".join(x for x in (arg, kind) if x)
     if script.endswith(".ps1"):
-        return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}" {arg}'.rstrip()
+        return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}" {tail}'.rstrip()
+    if kind:  # Gemini corre el comando en PowerShell (pwsh -NoProfile -Command): una ruta entre comillas se invoca con &
+        return f'& "{path}" {tail}'
     return f'"{path}"'
 
 
@@ -40,15 +58,16 @@ def _registered(blocks, needle):
     return False
 
 
-def merge_claude_hooks(settings, hooks_dir):
+def merge_hooks(settings, hooks_dir, events, kind="", timeout=10, named=False):
     """Devuelve (settings nuevo, lista de eventos agregados). No muta el dict de entrada."""
     out = json.loads(json.dumps(settings)) if isinstance(settings, dict) else {}
     hooks = out.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         hooks = out["hooks"] = {}
     added = []
-    for event, matcher, script, arg in HOOK_EVENTS:
-        needle = f'{script}" {arg}' if arg else script
+    for event, matcher, script, arg in events:
+        tail = " ".join(x for x in (arg, kind) if x)
+        needle = f'{script}" {tail}' if tail else script
         blocks = hooks.setdefault(event, [])
         if not isinstance(blocks, list):
             blocks = hooks[event] = []
@@ -57,10 +76,22 @@ def merge_claude_hooks(settings, hooks_dir):
         block = {}
         if matcher:
             block["matcher"] = matcher
-        block["hooks"] = [{"type": "command", "command": hook_command(hooks_dir, script, arg), "timeout": 10}]
+        entry = {}
+        if named:  # Gemini muestra el nombre en /hooks panel y permite /hooks disable <nombre>
+            entry["name"] = "agentnav-" + (arg or "unblock")
+        entry.update({"type": "command", "command": hook_command(hooks_dir, script, arg, kind), "timeout": timeout})
+        block["hooks"] = [entry]
         blocks.append(block)
         added.append(event)
     return out, added
+
+
+def merge_claude_hooks(settings, hooks_dir):
+    return merge_hooks(settings, hooks_dir, HOOK_EVENTS)
+
+
+def merge_gemini_hooks(settings, hooks_dir):
+    return merge_hooks(settings, hooks_dir, GEMINI_HOOK_EVENTS, kind="gemini", timeout=10000, named=True)
 
 
 def ensure_agentnav_settings(current, example, fork_repo):
@@ -100,19 +131,21 @@ def _write(path, data):
 
 
 def main(argv):
-    if len(argv) >= 3 and argv[0] == "claude-hooks":
+    if len(argv) >= 3 and argv[0] in ("claude-hooks", "gemini-hooks"):
         settings_path, hooks_dir = argv[1], argv[2]
+        who, merge, n = (("Claude", merge_claude_hooks, "cinco") if argv[0] == "claude-hooks"
+                         else ("Gemini", merge_gemini_hooks, "seis"))
         try:
             current = _read(settings_path)
         except json.JSONDecodeError as e:
             print(f"ERROR: {settings_path} no es JSON válido ({e}); no lo toco", file=sys.stderr)
             return 2
-        new, added = merge_claude_hooks(current, hooks_dir)
+        new, added = merge(current, hooks_dir)
         if added:
             _write(settings_path, new)
-            print("hooks registrados en settings.json de Claude: " + ", ".join(added))
+            print(f"hooks registrados en settings.json de {who}: " + ", ".join(added))
         else:
-            print("settings.json de Claude ya tenía los cinco hooks de AgentNav")
+            print(f"settings.json de {who} ya tenía los {n} hooks de AgentNav")
         return 0
     if len(argv) >= 4 and argv[0] == "agentnav-settings":
         settings_path, example_path, repo = argv[1], argv[2], ("" if argv[3] == "-" else argv[3])

@@ -464,11 +464,12 @@ class Gemini(unittest.TestCase):
         d = self._registry("obra")
         self._session(d, "2026-11-12T10-00-00", "aaaaaaaa-1111-2222-3333-444444444444", age=100)
         self._session(d, "2026-11-13T10-00-00", "bbbbbbbb-1111-2222-3333-444444444444")
-        with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "w", encoding="utf-8") as f:
-            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb-1111-2222-3333-444444444444", "prompt", "hola")) + "\n")
-            f.write("\t".join(("10:01:00", self.proj, "aaaaaaaa-1111-2222-3333-444444444444", "prompt", "otra")) + "\n")
-            f.write("\t".join(("10:02:00", self.proj, "99999999-claude-sid", "prompt", "de claude")) + "\n")
-        # la última con pedidos en Herdr que Gemini todavía guarde; la de Claude (sin archivo de Gemini) se saltea
+        with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "w", encoding="utf-8") as f:  # el hook anota 8 del sid
+            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb", "prompt", "hola")) + "\n")
+            f.write("\t".join(("10:01:00", self.proj, "aaaaaaaa", "prompt", "otra")) + "\n")
+            f.write("\t".join(("10:02:00", self.proj, "99999999", "prompt", "de claude")) + "\n")
+        # la última con pedidos en Herdr que Gemini todavía guarde, con el uuid entero del archivo; la de Claude
+        # (sin archivo de Gemini) se saltea
         self.assertEqual(an.last_herdr_session(self.proj, kind="gemini"), "aaaaaaaa-1111-2222-3333-444444444444")
         self.assertEqual(an.last_herdr_session(self.proj, exclude={"AAAAAAAA-1111-2222-3333-444444444444"}, kind="gemini"),
                          "bbbbbbbb-1111-2222-3333-444444444444")
@@ -484,7 +485,7 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an._continue_args(a, self.proj, said.append, set(), True), [])   # otro Gemini del proyecto
         self.assertTrue(any("otro Gemini" in s for s in said))
         with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "w", encoding="utf-8") as f:
-            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb-1111-2222-3333-444444444444", "stop", "")) + "\n")
+            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb", "stop", "")) + "\n")
         used = set()
         self.assertEqual(an._continue_args(a, self.proj, said.append, used, True), ["--resume", "bbbbbbbb-1111-2222-3333-444444444444"])
         self.assertEqual(an._continue_args(a, self.proj, said.append, used, False), ["--resume", "latest"])  # ya usada
@@ -510,6 +511,15 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.gemini_hook_status({"hooks": hooks}), ([ev for ev, _ in an.GEMINI_HOOK_EVENTS], []))
         self.assertEqual(an.gemini_hook_status({})[0], [])
         self.assertEqual(an.gemini_hook_status({"hooks": {"BeforeAgent": [{"hooks": [{"command": cmd.format("prompt").replace(" gemini", "")}]}]}})[0], [])
+
+    def test_agent_label_gemini(self):
+        g = {"name": "gem", "agent": "gemini", "terminal_title_stripped": "Gemini CLI"}
+        self.assertEqual(an.agent_label(g, "arreglá el build"), "gem · arreglá el build")
+        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), "arreglá el build"), "gem · arreglá el build")
+        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), ""), "gem · C:\\Obra")
+        self.assertEqual(an.agent_label(g, ""), "gem")
+        c = {"name": "obra", "agent": "claude", "terminal_title_stripped": "Arreglo del build"}
+        self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
 
     def test_exit_command(self):
         self.assertEqual(an.EXIT_COMMAND, {"claude": "/exit", "gemini": "/quit"})

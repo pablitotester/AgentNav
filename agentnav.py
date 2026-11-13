@@ -492,12 +492,13 @@ def last_herdr_session(path, exclude=(), kind="claude"):
     want = _norm_path(path)
     skip = {str(x).lower() for x in exclude}
     if kind == "gemini":
-        shorts = {s for _, s in gemini_sessions(path) if s}
-        if not shorts:
+        by_short = {s: f for f, s in reversed(gemini_sessions(path)) if s}  # ante un choque de 8, el más nuevo
+        if not by_short:
             return None
 
-        def stored(sid):
-            return sid if sid.lower()[:8] in shorts else None
+        def stored(sid):  # el diario trae los 8 primeros (sidShort); --resume necesita el uuid entero del archivo
+            f = by_short.get(sid.lower()[:8])
+            return gemini_sid_of(f) if f else None
     else:
         d = _claude_project_dirs().get(claude_project_key(path).lower())
         if not d:
@@ -619,16 +620,21 @@ def gemini_session_file(path, sid):
     return None
 
 
+def gemini_sid_of(file):
+    """Id entero de una sesión, leído de su primer registro ({"sessionId": …}); None si no se puede."""
+    try:
+        with open(file, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(4000)
+    except OSError:
+        return None
+    m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', head)
+    return m.group(1).lower() if m else None
+
+
 def _gemini_newest_sid(path):
-    """Id entero de la sesión más nueva de la carpeta (la que `--resume latest` elige), leído del primer registro."""
+    """Id entero de la sesión más nueva de la carpeta (la que `--resume latest` elige)."""
     for f, _ in gemini_sessions(path)[:1]:
-        try:
-            with open(f, encoding="utf-8", errors="replace") as fh:
-                head = fh.read(4000)
-        except OSError:
-            return None
-        m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', head)
-        return m.group(1).lower() if m else None
+        return gemini_sid_of(f)
     return None
 
 
@@ -799,7 +805,7 @@ def _under_herdr(proc, by_pid):
     return False
 
 
-_GEMINI_CMD_RE = re.compile(r"gemini-cli|[\\/]gemini(\.js|\.cmd)?(\"|\s|$)", re.I)
+_GEMINI_CMD_RE = re.compile(r"@google[\\/]gemini-cli[\\/]|[\\/]gemini(\.js|\.cmd)?(\"|\s|$)", re.I)
 
 
 def _is_agent_proc(p, kind, by_pid=None):
@@ -1039,10 +1045,11 @@ SECRET_RE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]
 def agent_label(a, hint=""):
     """La etiqueta del panel con la misma regla que Pane-Label del hook: el nombre que Herdr le dio al agente (o su
     tipo), y la tarea = título que Claude Code puso a la conversación; mientras siga en "Claude Code", `hint` (el
-    último pedido). Una línea, 60 caracteres, sin comillas dobles ni nada con pinta de clave."""
+    último pedido). Gemini CLI no resume la conversación en el título: con él va siempre el último pedido si lo hay.
+    Una línea, 60 caracteres, sin comillas dobles ni nada con pinta de clave."""
     name = str(a.get("name") or a.get("agent") or "agente")
     task = str(a.get("terminal_title_stripped") or "").strip()
-    if not task or task == "Claude Code":
+    if not task or task in ("Claude Code", "Gemini", "Gemini CLI") or (a.get("agent") not in (None, "", "claude") and hint):
         task = str(hint or "")
     task = re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", task).replace('"', "'").strip()
     if SECRET_RE.search(task):
@@ -2674,11 +2681,20 @@ GEMINI_HOOK_EVENTS = (("SessionStart", 'agentnav-state.ps1" start gemini'), ("Be
 
 
 def gemini_version(timeout=20):
-    """(ruta del lanzador, versión) de Gemini CLI, o (None, "") si no está en el PATH. Es un .cmd de npm que levanta
-    node: tarda un par de segundos."""
+    """(ruta del lanzador, versión) de Gemini CLI, o (None, "") si no está en el PATH. La versión sale del package.json
+    que npm deja al lado del lanzador (%APPDATA%\\npm\\node_modules\\@google\\gemini-cli); `gemini --version` levanta node
+    (1-2 s) y queda sólo de respaldo."""
     exe = shutil.which("gemini")
     if not exe:
         return None, ""
+    pkg = os.path.join(os.path.dirname(exe), "node_modules", "@google", "gemini-cli", "package.json")
+    try:
+        with open(pkg, encoding="utf-8") as f:
+            ver = str(json.load(f).get("version") or "")
+        if ver:
+            return exe, ver
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         cp = subprocess.run([exe, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                             timeout=timeout, creationflags=CREATE_NO_WINDOW)
@@ -2725,7 +2741,7 @@ def gemini_checks(projects=None):
             out.append((True, f"settings.json de Gemini: hooks {', '.join(have)}"))
         else:
             out.append((None if not uses else False,
-                        f"settings.json de Gemini: faltan los hooks {', '.join(missing)} (el estado de cada Gemini no llega a Herdr): installer\\instalar.ps1 -ConGemini"))
+                        f"settings.json de Gemini: faltan los hooks {', '.join(missing)} (el estado de cada Gemini no llega a Herdr): installer\\install.ps1 -ConGemini"))
     except AgentNavError as e:
         out.append((None if not uses else False, str(e)))
     if uses:

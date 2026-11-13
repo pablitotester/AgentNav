@@ -140,7 +140,7 @@ de Gemini, con una columna que dice cuál agente las usó. `doctor` muestra un b
 está en el PATH o algún proyecto lo usa: versión instalada y si los seis hooks nuestros están en
 `%USERPROFILE%\.gemini\settings.json` (`SessionStart`, `BeforeAgent`, `AfterAgent`, `SessionEnd`, `Notification`,
 `AfterTool`, todos con `agentnav-state.ps1 <acción> gemini` o `agentnav-unblock.cmd gemini`); si faltan, el estado de
-cada Gemini no llega a Herdr y lo pone el instalador con `-ConGemini`.
+cada Gemini no llega a Herdr y lo pone el instalador (`installer\install.ps1 -ConGemini`).
 
 ## Herdr propio: los temas dentro de la pantalla de settings
 

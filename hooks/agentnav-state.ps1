@@ -277,7 +277,8 @@ switch ($Action) {
         # Sesión nueva, retomada o /clear (payload.source): el agente está en el prompt, sin nada pendiente.
         $state = "idle"
         Remove-Marker $workingFile
-        Remove-Marker $blockedFile
+        # Una sesión matada estando blocked y retomada con --resume trae el mismo sid: la bandera global también se actualiza.
+        if ([IO.File]::Exists($blockedFile)) { Remove-Marker $blockedFile; $syncFlag = $true }
         Journal "start" ([string]$payload.source)
     }
     "prompt" {

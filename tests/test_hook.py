@@ -179,6 +179,19 @@ class HookDeEstado(unittest.TestCase):
         self.assertEqual(self._run("prompt", "Gem ini", base), [])
         self.assertIsNone(self._marker("working", "sid-c1"))
 
+    def test_resume_sobre_sesion_bloqueada_limpia_la_bandera(self):
+        """Gemini matado con un permiso abierto y retomado con --resume (mismo sid): start borra la marca y la bandera."""
+        sid = "sid-g2"
+        base = {"session_id": sid, "cwd": r"C:\proj\demo"}
+        self._run("prompt", "gemini", dict(base, hook_event_name="BeforeAgent", prompt="algo"))
+        self._run("notify", "gemini", dict(base, hook_event_name="Notification", notification_type="ToolPermission", message="m"))
+        self.assertTrue(self._flag())
+        calls = self._run("start", "gemini", dict(base, hook_event_name="SessionStart", source="resume"))
+        self.assertEqual(self._report(calls, "idle")[:2], ["--agent-session-id", sid])
+        self.assertIsNone(self._marker("blocked", sid))
+        self.assertIsNone(self._marker("working", sid))
+        self.assertFalse(self._flag())
+
     @unittest.skipIf(_ntfy_on(), "settings.json tiene topic de ntfy: no se manda un aviso de prueba desde el test")
     def test_claude_permiso_sin_details(self):
         base = {"session_id": "sid-c2", "cwd": r"C:\proj\demo", "hook_event_name": "Notification",

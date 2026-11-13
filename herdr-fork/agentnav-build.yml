@@ -1,6 +1,6 @@
 # AgentNav: Herdr con cinco temas extra (cs16, matrix, procomm, ambar, miami), siempre al día con upstream.
 #
-# Una vez por día (o a mano) mira el último tag v* de herdrdev/herdr. Si es más nuevo que agentnav/BASE_TAG,
+# Una vez por semana (o a mano) mira el último tag v* de herdrdev/herdr. Si es más nuevo que agentnav/BASE_TAG,
 # rebasa la rama `agentnav` (un solo commit: paletas + este workflow) sobre ese tag y la vuelve a subir.
 # Después compila herdr.exe para Windows x86_64 igual que el release oficial (mismo toolchain, Zig y flags)
 # y publica un release `agentnav-<tag>` con: el exe suelto y su SHA-256 (para `agentnav herdr-sync`), el zip completo
@@ -21,9 +21,10 @@ on:
         description: "recompilar aunque el release ya exista"
         required: false
         default: "false"
-  # Cada 6 horas: un release nuevo de upstream llega a la PC el mismo día.
+  # Una vez por semana (lunes 06:17 UTC): GitHub pausó Actions en el fork por el consumo de dos builds diarios
+  # de ~13 min en runners Windows. Un release nuevo de upstream entre medio se trae a mano (workflow_dispatch).
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 6 * * 1"
   # Cambios del parche (temas, etc.) sin release nuevo de upstream: recompila y reemplaza el release actual.
   # Los push del propio workflow (rebase) usan GITHUB_TOKEN y no vuelven a disparar esto.
   push:

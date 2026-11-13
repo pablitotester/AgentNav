@@ -67,9 +67,37 @@ Lo que no se puede ver sin tocar el fork: la retención de 20/100 ms. Para medir
 en el entorno del servidor (`src/render_prof.rs`) cuenta `pty.request_render_delayed` (renders que se agendaron por la
 retención) contra `pty.request_render`; muchos "delayed" por ráfaga = la retención está activa en cada tecla.
 
-## Propuesta para el fork: la retención, configurable (sin aplicar)
+## Propuesta para el fork: la retención, configurable
 
-`herdr-fork\cursor-settle.patch`: agrega a `[advanced]` dos claves, `cursor_settle_ms` (default 20) y
+Estado al 13/11 18:40: aplicada en el fork como rama **`cursor-settle`** (commit `fdc3a233`, sobre `agentnav` =
+v0.9.5 + parche de temas y árbol); Pablo movió `agentnav` a ese commit por la API y disparó el build a mano (mover la
+rama por la API no dispara el evento push). **Build OK**: run 43509825112, release `agentnav-v0.9.5` reemplazado a las
+21:38 UTC con `herdr.exe` SHA-256 `8813fa9baf95734e932611ebf94458758711bfe309308e26a73a000ce4ba0177`. Es el exe que
+instala `agentnav herdr-sync` (todavía no instalado: cierra sesiones). Rama `cron-semanal` (`b8d9e645`) encima, con
+el cron bajado a los lunes porque GitHub pausó Actions en el fork por consumo. `herdr-fork\cursor-settle.patch` es el
+commit real (`git format-patch`). Los comandos que se usaron, por si hay que repetir el ciclo con otro commit:
+
+```powershell
+# a) con un clon del fork
+git checkout agentnav; git merge --ff-only cursor-settle; git push origin agentnav
+# b) sin clon, moviendo la rama por la API (fast-forward)
+gh api -X PATCH repos/pablitotester/herdr/git/refs/heads/agentnav -f sha=fdc3a233dfafe1e8345c72ee9f6e5c92a496116f
+# c) en la web: PR cursor-settle → agentnav y merge
+# Si el push no disparó el build (o para rehacerlo):
+gh workflow run agentnav-build.yml -R pablitotester/herdr -f force=true
+gh run list -R pablitotester/herdr --workflow agentnav-build.yml --limit 3
+```
+
+Prueba visual después del build (4 líneas; `agentnav herdr-sync` cierra sesiones, lo corre agentnav-7d cuando Pablo diga):
+
+```powershell
+agentnav herdr-sync --force                 # instala el exe del fork y reinicia el servidor (cierra sesiones)
+# en %APPDATA%\herdr\config.toml, bajo [advanced]:  cursor_settle_ms = 0  /  cursor_jump_hold_ms = 40
+herdr server stop; agentnav up              # se lee al arrancar; reload-config no alcanza
+# tipear ráfagas en un panel pwsh: el cuadrito tiene que seguir a la letra; si algo parpadea al redibujar, subir a 40/100
+```
+
+`herdr-fork\cursor-settle.patch` agrega a `[advanced]` dos claves, `cursor_settle_ms` (default 20) y
 `cursor_jump_hold_ms` (default 100); **0 en las dos apaga la retención** y deja Windows como macOS/Linux (cursor al
 instante, con el parpadeo de ConPTY que motivó el cambio de 0.9.2 cuando un app redibuja). Un valor intermedio (p. ej.
 `cursor_jump_hold_ms = 40`) acota lo peor sin volver al flicker. El valor se lee una vez al arrancar el servidor

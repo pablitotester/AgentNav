@@ -1,27 +1,168 @@
-# Propuesta (NO aplicada) para el fork pablitotester/herdr, rama agentnav, sobre v0.9.5:
-# retención del cursor en Windows configurable desde [advanced].
-#
-#   [advanced]
-#   cursor_settle_ms = 20       # paso normal del cursor (misma fila, hasta 2 columnas); 0 = sin retención
-#   cursor_jump_hold_ms = 100   # "salto" (otra fila o más de 2 columnas); 0 = sin retención
-#
-# Con los defaults el comportamiento es idéntico al de v0.9.5. Se lee una vez al arrancar el servidor (OnceLock);
-# reload-config no lo cambia. Los hunks de cursor.rs, terminal.rs, model.rs y main.rs son contra v0.9.5 tal cual;
-# el enganche en App::new (src/app/mod.rs) va descripto al final porque su contexto exacto depende del rebase.
-# Ver herdr-fork\cursor-lag.md para el análisis.
+From fdc3a233dfafe1e8345c72ee9f6e5c92a496116f Mon Sep 17 00:00:00 2001
+From: Pablo Gioia <pablogioia@3dar.com>
+Date: Fri, 13 Nov 2026 17:03:03 -0300
+Subject: [PATCH] =?UTF-8?q?agentnav:=20retenci=C3=B3n=20del=20cursor=20con?=
+ =?UTF-8?q?figurable=20en=20Windows=20([advanced]=20cursor=5Fsettle=5Fms?=
+ =?UTF-8?q?=20/=20cursor=5Fjump=5Fhold=5Fms)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
+Upstream (0.9.2, #2968/#4303) retiene la posición del cursor del panel antes de mostrarla, sólo en Windows:
+20 ms por paso normal, 100 ms por salto (otra fila o >2 columnas). Al tipear rápido en pwsh el cuadrito
+queda clavado hasta 100 ms y después salta. Este commit saca las dos ventanas a [advanced] con los mismos
+defaults (20/100): sin configurar, el comportamiento es idéntico; 0/0 apaga la retención. Se leen una vez
+al arrancar el servidor (App::new y new_from_handoff) vía un OnceLock en pane/cursor.rs. Doc en agentnav/README.md.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ agentnav/README.md   | 25 +++++++++++++++++++++++++
+ src/app/mod.rs       |  9 +++++++++
+ src/config/model.rs  |  8 ++++++++
+ src/main.rs          |  6 ++++++
+ src/pane.rs          |  1 +
+ src/pane/cursor.rs   | 34 ++++++++++++++++++++++++++++++----
+ src/pane/terminal.rs | 11 +++++++----
+ 7 files changed, 86 insertions(+), 8 deletions(-)
+
+diff --git a/agentnav/README.md b/agentnav/README.md
+index 84d23cee..602f66d0 100644
+--- a/agentnav/README.md
++++ b/agentnav/README.md
+@@ -30,6 +30,11 @@ una función en `src/app/state.rs`. Por eso el único camino es compilar.
+   alrededor de `render_agent_panel`), `src/client/shell/agent_sidebar.rs` (el botón `tree`),
+   `src/client/shell/mouse.rs` (click izquierdo, click derecho y rueda), `src/client/shell/preferences.rs` (un campo
+   opcional), `src/client/shell/config.rs` (guardarlo) y `src/client/mod.rs` (`| shell.tick_folder_tree()` en el timer).
++- Retención del cursor configurable (Windows), marcada con `// AgentNav`: `src/pane/cursor.rs` (las ventanas salen de un
++  `OnceLock` en vez de las constantes de 20/100 ms; `settle_enabled()`), `src/pane/terminal.rs` (`cursor_position_settle_enabled()`
++  en vez de `const … = cfg!(windows)`), `src/pane.rs` (re-export), `src/config/model.rs` (`[advanced] cursor_settle_ms`,
++  `cursor_jump_hold_ms`), `src/main.rs` (ayuda en `--default-config`) y `src/app/mod.rs` (se fijan en `App::new` y
++  `new_from_handoff`). Ver «Cursor que va atrás de las teclas».
+ - `.github/workflows/agentnav-build.yml` y esta carpeta.
+ 
+ Reglas de los tests de upstream que las paletas cumplen: `sidebar_bg = Color::Reset`, contraste fondo/fila activa ≥ 1.05,
+@@ -52,6 +57,26 @@ Un **push a esta rama** que toque `src/`, `Cargo.*`,
+ `build.rs` o el workflow recompila y reemplaza los archivos del release actual (misma versión, exe nuevo). El release
+ siempre queda marcado como *latest*: de eso depende la URL del manifiesto.
+ 
++## Cursor que va atrás de las teclas
++
++Sólo en Windows, Herdr (desde 0.9.2) retiene la posición del cursor del panel antes de mostrarla para que ConPTY no lo
++haga parpadear: 20 ms si el cursor dio un paso normal (misma fila, hasta 2 columnas) y 100 ms si "saltó" (otra fila o más
++de 2 columnas, la pinta de un redibujado que estaciona el cursor). La letra tipeada se ve al instante; el cuadrito recién
++cuando vence la retención, y cada tecla nueva durante la espera la reinicia. PSReadLine redibuja la línea en cada tecla,
++así que en una ráfaga el cursor queda clavado hasta 100 ms y después salta. Este build lo hace configurable:
++
++```toml
++[advanced]
++cursor_settle_ms = 0        # paso normal (default 20)
++cursor_jump_hold_ms = 40    # salto (default 100); 0 y 0 apagan la retención del todo
++```
++
++Con los defaults el exe se comporta igual que el oficial. Se lee al arrancar el servidor (`herdr server stop` y
++`agentnav up`; `reload-config` no alcanza). Con 0/0 vuelve el parpadeo del cursor que motivó el cambio de upstream en apps
++que estacionan el cursor durante un redibujado (Codex idle, barras de estado); 0/40 acota lo peor sin volver a eso. Para
++medir sin ojos: `HERDR_RENDER_PROF=1` en el entorno del servidor cuenta `pty.request_render_delayed` (renders agendados por
++la retención) contra `pty.request_render`.
++
+ ## Árbol de carpetas
+ 
+ En la sección **agents** del sidebar, el botón `[tree]` (a la izquierda de `grouped`/`priority`; `[t]`
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 35b8e9cc..b867b862 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -423,6 +423,11 @@ impl App {
+         let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
+             policy.restore_session && snapshot.is_none(),
+         )));
++        // AgentNav: retención del cursor configurable ([advanced] cursor_settle_ms / cursor_jump_hold_ms).
++        crate::pane::configure_cursor_settle_windows(
++            Duration::from_millis(config.advanced.cursor_settle_ms),
++            Duration::from_millis(config.advanced.cursor_jump_hold_ms),
++        );
+         let (workspaces, active, selected) = if let Some(snap) = snapshot {
+             let history = config
+                 .experimental
+@@ -713,6 +718,10 @@ impl App {
+         ) {
+             app.plugin_installation_cleanup_allowed = false;
+         }
++        crate::pane::configure_cursor_settle_windows(
++            Duration::from_millis(config.advanced.cursor_settle_ms),
++            Duration::from_millis(config.advanced.cursor_jump_hold_ms),
++        ); // AgentNav
+         let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
+             snapshot,
+             config.advanced.scrollback_limit_bytes,
+diff --git a/src/config/model.rs b/src/config/model.rs
+index 29802fd9..b8583236 100644
+--- a/src/config/model.rs
++++ b/src/config/model.rs
+@@ -1054,6 +1054,12 @@ pub struct AdvancedConfig {
+     /// Maximum scrollback buffer size in bytes retained per pane terminal. Default: 10000000.
+     #[serde(alias = "scrollback_lines")]
+     pub scrollback_limit_bytes: usize,
++    /// AgentNav. Windows only: how long a small cursor step (same row, up to 2 columns) is held before it is
++    /// shown, so ConPTY redraws do not flicker the cursor. 0 disables the hold. Default: 20.
++    pub cursor_settle_ms: u64,
++    /// AgentNav. Windows only: how long a cursor jump (another row, or more than 2 columns) is held, the shape
++    /// of a redraw parking the cursor. 0 disables the hold. Default: 100.
++    pub cursor_jump_hold_ms: u64,
+ }
+ 
+ #[derive(Debug, Deserialize)]
+@@ -1326,6 +1332,8 @@ impl Default for AdvancedConfig {
+     fn default() -> Self {
+         Self {
+             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
++            cursor_settle_ms: 20,
++            cursor_jump_hold_ms: 100,
+         }
+     }
+ }
+diff --git a/src/main.rs b/src/main.rs
+index f97e7e2b..701c749a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -444,6 +444,12 @@ pane_history = false
+ # Maximum scrollback buffer size in bytes retained per pane terminal.
+ # Matches Ghostty's default scrollback-limit behavior.
+ # scrollback_limit_bytes = 10000000
++# Windows only (AgentNav build). Herdr holds the pane cursor briefly before showing it so ConPTY
++# redraws do not flicker it: cursor_settle_ms for a small same-row step, cursor_jump_hold_ms for a
++# jump to another row or more than 2 columns (the shape of a redraw parking the cursor).
++# Lower values make the cursor follow fast typing sooner; 0 disables the hold. Read at server start.
++# cursor_settle_ms = 20
++# cursor_jump_hold_ms = 100
+ "##;
+ 
+ // Bundled at build time so the printed skill always matches this binary's release.
+diff --git a/src/pane.rs b/src/pane.rs
+index f80baeb8..b00eb7d1 100644
+--- a/src/pane.rs
++++ b/src/pane.rs
+@@ -27,6 +27,7 @@ use crate::render_signal::RenderSignal;
+ mod agent_detection;
+ mod background_agent;
+ mod cursor;
++pub(crate) use cursor::configure_settle_windows as configure_cursor_settle_windows; // AgentNav
+ mod input;
+ mod kitty_keyboard;
+ mod osc;
+diff --git a/src/pane/cursor.rs b/src/pane/cursor.rs
+index 30137730..50dc38f6 100644
 --- a/src/pane/cursor.rs
 +++ b/src/pane/cursor.rs
-@@ -1,9 +1,36 @@
--use std::time::{Duration, Instant};
+@@ -1,3 +1,4 @@
 +use std::sync::OnceLock;
-+use std::time::{Duration, Instant};
-
+ use std::time::{Duration, Instant};
+ 
  use super::terminal::TerminalCursorState;
-
+@@ -5,6 +6,31 @@ use super::terminal::TerminalCursorState;
  pub(crate) const CURSOR_POSITION_SETTLE: Duration = Duration::from_millis(20);
  const CURSOR_POSITION_MAX_HOLD: Duration = Duration::from_millis(100);
-
+ 
 +// AgentNav: ventanas de retención configurables ([advanced] cursor_settle_ms / cursor_jump_hold_ms).
 +// Se fijan una vez al arrancar el servidor; sin configurar valen las constantes de arriba.
 +static SETTLE_WINDOWS: OnceLock<(Duration, Duration)> = OnceLock::new();
@@ -50,16 +191,16 @@
  #[derive(Debug, Default)]
  pub(crate) struct DecscusrTracker {
      state: DecscusrParseState,
-@@ -177,7 +204,7 @@ impl CursorPositionSettleState {
-         }
-
+@@ -176,7 +202,7 @@ impl CursorPositionSettleState {
+         };
+ 
          let pending_since = self.pending_since.unwrap_or(now);
 -        if now.duration_since(pending_since) >= CURSOR_POSITION_MAX_HOLD {
 +        if now.duration_since(pending_since) >= jump_hold_window() {
              self.settle(Some(current));
          } else {
              if !same_cursor_position(candidate, current) {
-@@ -203,7 +230,7 @@ impl CursorPositionSettleState {
+@@ -202,7 +228,7 @@ impl CursorPositionSettleState {
          // otherwise, so it waits for the max window. An ordinary caret step only
          // waits the normal settle window; the max hold bounds either case.
          if now.duration_since(candidate_since) >= self.candidate_hold()
@@ -68,8 +209,8 @@
          {
              return Some(TerminalCursorState {
                  visible: current.visible && candidate.visible,
-@@ -236,9 +263,9 @@ impl CursorPositionSettleState {
-
+@@ -235,9 +261,9 @@ impl CursorPositionSettleState {
+ 
      fn candidate_hold(&self) -> Duration {
          if self.candidate_jump || self.candidate.is_some_and(|candidate| !candidate.visible) {
 -            CURSOR_POSITION_MAX_HOLD
@@ -79,11 +220,14 @@
 +            settle_window()
          }
      }
-
+ 
+diff --git a/src/pane/terminal.rs b/src/pane/terminal.rs
+index d4b7ef57..0312b5ac 100644
 --- a/src/pane/terminal.rs
 +++ b/src/pane/terminal.rs
-@@ -42,7 +42,10 @@
-
+@@ -42,7 +42,10 @@ use super::{
+ 
+ const DEFAULT_DETECTION_ROWS: usize = 24;
  const KITTY_GRAPHICS_REDRAW_SETTLE: Duration = Duration::from_millis(20);
 -const CURSOR_POSITION_SETTLE_ENABLED: bool = cfg!(windows);
 +// AgentNav: antes `cfg!(windows)` fijo; ahora también depende de [advanced] cursor_settle_ms / cursor_jump_hold_ms.
@@ -91,21 +235,26 @@
 +    super::cursor::settle_enabled()
 +}
  const MODE_MOUSE_X10: u16 = 9;
-@@ -1447,7 +1450,7 @@
+ const MODE_MOUSE_PRESS_RELEASE: u16 = 1000;
+ const MODE_MOUSE_BUTTON_MOTION: u16 = 1002;
+@@ -1447,7 +1450,7 @@ impl GhosttyPaneTerminal {
+             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+         }
          // Intermediate synchronized-frame positions must not become settled cursors.
 -        if CURSOR_POSITION_SETTLE_ENABLED && !synchronized_output {
 +        if cursor_position_settle_enabled() && !synchronized_output {
              let cursor_started = crate::render_prof::timer();
              let cursor_after_write = current_cursor_state(&mut core);
              crate::render_prof::duration_since("pty.cursor_state_update", cursor_started);
-@@ -1466,7 +1469,7 @@
-         let render_delay = render_delay_after_pty_write(
+@@ -1466,7 +1469,7 @@ impl GhosttyPaneTerminal {
              synchronized_output,
              has_kitty_graphics_sequence,
              core.cursor_settle_state.render_delay(),
 -            CURSOR_POSITION_SETTLE_ENABLED,
 +            cursor_position_settle_enabled(),
          );
+         if request_render {
+             crate::render_prof::event("pty.request_render");
 @@ -2541,7 +2544,7 @@ fn effective_cursor_state(
      core: &mut GhosttyPaneCore,
      current: Option<TerminalCursorState>,
@@ -115,54 +264,6 @@
          return current;
      }
      core.cursor_settle_state
+-- 
+2.52.0.windows.1
 
---- a/src/config/model.rs
-+++ b/src/config/model.rs
-@@ -1053,6 +1053,14 @@ pub struct AdvancedConfig {
-     /// Maximum scrollback buffer size in bytes retained per pane terminal. Default: 10000000.
-     #[serde(alias = "scrollback_lines")]
-     pub scrollback_limit_bytes: usize,
-+    /// Windows only: how long a small cursor step (same row, up to 2 columns) is held before it is shown,
-+    /// so ConPTY redraws do not flicker the cursor. 0 disables the hold. Default: 20.
-+    pub cursor_settle_ms: u64,
-+    /// Windows only: how long a cursor jump (another row, or more than 2 columns) is held, the shape of a redraw
-+    /// parking the cursor. 0 disables the hold. Default: 100.
-+    pub cursor_jump_hold_ms: u64,
- }
-@@ -1325,6 +1333,8 @@ impl Default for AdvancedConfig {
-     fn default() -> Self {
-         Self {
-             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
-+            cursor_settle_ms: 20,
-+            cursor_jump_hold_ms: 100,
-         }
-     }
- }
-
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -443,6 +443,12 @@
- [advanced]
- # Maximum scrollback buffer size in bytes retained per pane terminal.
- # Matches Ghostty's default scrollback-limit behavior.
- # scrollback_limit_bytes = 10000000
-+# Windows only. Herdr holds the pane cursor briefly before showing it so ConPTY redraws
-+# do not flicker it: cursor_settle_ms for a small same-row step, cursor_jump_hold_ms for a
-+# jump to another row or more than 2 columns (the shape of a redraw parking the cursor).
-+# Lower values make the cursor follow fast typing sooner; 0 disables the hold. Read at server start.
-+# cursor_settle_ms = 20
-+# cursor_jump_hold_ms = 100
-
-# --- src/app/mod.rs (enganche, a mano) ---------------------------------------------------------------
-# En App::new, donde ya se lee `config.advanced.scrollback_limit_bytes` (v0.9.5: cerca de la línea 553,
-# `pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,`), agregar antes de construir el App:
-#
-#     crate::pane::cursor::configure_settle_windows(
-#         std::time::Duration::from_millis(config.advanced.cursor_settle_ms),
-#         std::time::Duration::from_millis(config.advanced.cursor_jump_hold_ms),
-#     );
-#
-# No hace falta tocar el camino de reload-config (línea ~967, `if !invalid_section("advanced")`): el OnceLock
-# conserva el valor del arranque, y el comentario de main.rs ya dice "Read at server start".
-# Tests sugeridos (src/pane/cursor.rs, mod tests): con configure_settle_windows(0, 0) `settle_enabled()` es false
-# en Windows; con (0, 40) un paso normal se reporta al instante y un salto a los 40 ms.

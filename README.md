@@ -133,8 +133,12 @@ puede mezclar, por ejemplo un Claude y un Gemini en el mismo proyecto:
 
 ```json
 { "name": "Obra", "path": "C:\\Obra", "continue": true,
-  "agents": [ "obra", { "name": "gem", "kind": "gemini" } ] }
+  "agents": [ "obra", { "name": "gem", "kind": "gemini", "args": ["-m", "gemini-3.1-flash-lite"] } ] }
 ```
+
+El modelo se fija con `args` en el agente (o en el proyecto): `["-m", "gemini-3.1-flash-lite"]`; sin `-m` Gemini usa su
+modelo por defecto, que al 13/11 (0.68.0, `gemini-3.8-flash`) respondía 503 en bucle, y `gemini-2.5-flash` ya no existe.
+`gemini --list-models` muestra los disponibles.
 
 Gemini guarda sus sesiones por carpeta en `%USERPROFILE%\.gemini\tmp\<id>\chats\session-<fecha>-<8 del id>.jsonl`;
 el `<id>` sale del registro `%USERPROFILE%\.gemini\projects.json` (ruta en minúsculas → id corto; cada carpeta `tmp\<id>`
@@ -151,7 +155,9 @@ de Gemini, con una columna que dice cuál agente las usó. `doctor` muestra un b
 está en el PATH o algún proyecto lo usa: versión instalada y si los seis hooks nuestros están en
 `%USERPROFILE%\.gemini\settings.json` (`SessionStart`, `BeforeAgent`, `AfterAgent`, `SessionEnd`, `Notification`,
 `AfterTool`, todos con `agentnav-state.ps1 <acción> gemini` o `agentnav-unblock.cmd gemini`); si faltan, el estado de
-cada Gemini no llega a Herdr y lo pone el instalador (`installer\install.ps1 -ConGemini`).
+cada Gemini no llega a Herdr y lo pone el instalador (`installer\install.ps1 -ConGemini`). También avisa si el login es
+por clave (`security.auth.selectedType` = `gemini-api-key`) y no hay `GEMINI_API_KEY` ni en `%USERPROFILE%\.gemini\.env`
+ni en el entorno, o si no hay ningún tipo de login elegido ni clave (Gemini lo pide al arrancar y el panel queda ahí).
 
 ### Hook de Gemini
 

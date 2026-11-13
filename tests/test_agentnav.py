@@ -432,6 +432,15 @@ class Gemini(unittest.TestCase):
         self.assertTrue(an._is_agent_proc(cla, "claude", by))
         self.assertFalse(an._is_agent_proc(srv, "gemini", by))
         self.assertFalse(an._is_agent_proc(srv, "claude", by))
+        # Líneas reales de Gemini 0.68 interactivo (sondeo del 13/11): el padre, hijo del pwsh del panel, lleva la ruta
+        # con barras normales (así la arma gemini.cmd); el relanzado, con barras invertidas y --max-old-space-size.
+        padre = {"pid": 7, "ppid": 6, "name": "node.exe", "cmd": '"C:\\Program Files\\nodejs\\node.exe" '
+                 'C:\\Users\\pablo\\AppData\\Roaming\\npm/node_modules/@google/gemini-cli/bundle/gemini.js --skip-trust -m gemini-3.1-flash-lite'}
+        hijo = {"pid": 8, "ppid": 7, "name": "node.exe", "cmd": '"C:\\Program Files\\nodejs\\node.exe" --max-old-space-size=16361 '
+                'C:\\Users\\pablo\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\bundle\\gemini.js'}
+        by = {6: {"pid": 6, "ppid": 1, "name": "pwsh.exe", "cmd": "pwsh"}, 7: padre, 8: hijo}
+        self.assertTrue(an._is_agent_proc(padre, "gemini", by))
+        self.assertFalse(an._is_agent_proc(hijo, "gemini", by))
 
     def test_sessions_y_project_dir(self):
         self.assertEqual(an.gemini_sessions(self.proj), [])
@@ -474,6 +483,14 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.last_herdr_session(self.proj, exclude={"AAAAAAAA-1111-2222-3333-444444444444"}, kind="gemini"),
                          "bbbbbbbb-1111-2222-3333-444444444444")
         self.assertIsNone(an.last_herdr_session(self.proj, kind="claude"))   # Claude no tiene esa carpeta
+        # /clear: sid nuevo en el diario pero Gemini no escribe su archivo hasta el primer mensaje → sigue la anterior;
+        # en cuanto el archivo nuevo existe (con el sid nuevo), manda ése
+        with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "a", encoding="utf-8") as f:
+            f.write("\t".join(("10:03:00", self.proj, "cccccccc", "start", "clear")) + "\n")
+            f.write("\t".join(("10:04:00", self.proj, "cccccccc", "prompt", "tras el clear")) + "\n")
+        self.assertEqual(an.last_herdr_session(self.proj, kind="gemini"), "aaaaaaaa-1111-2222-3333-444444444444")
+        self._session(d, "2026-11-13T10-04", "cccccccc-1111-2222-3333-444444444444")
+        self.assertEqual(an.last_herdr_session(self.proj, kind="gemini"), "cccccccc-1111-2222-3333-444444444444")
 
     def test_gemini_continue_args(self):
         a = {"name": "g", "kind": "gemini", "continue": True, "args": []}
@@ -520,6 +537,30 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.agent_label(g, ""), "gem")
         c = {"name": "obra", "agent": "claude", "terminal_title_stripped": "Arreglo del build"}
         self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
+
+    def test_gemini_auth_note(self):
+        env = os.path.join(self.tmp.name, ".env")
+        old = {k: os.environ.pop(k, None) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+        try:
+            by_key = {"security": {"auth": {"selectedType": "gemini-api-key"}}}
+            self.assertIn("sin API key", an.gemini_auth_note(by_key, env)[1])
+            self.assertIn("sin login", an.gemini_auth_note({}, env)[1])
+            self.assertIsNone(an.gemini_auth_note({"security": {"auth": {"selectedType": "oauth-personal"}}}, env))
+            with open(env, "w", encoding="utf-8") as f:
+                f.write("# clave\nGEMINI_API_KEY=\"AIza-xyz\"\n")
+            self.assertIsNone(an.gemini_auth_note(by_key, env))
+            self.assertIsNone(an.gemini_auth_note({}, env))
+            with open(env, "w", encoding="utf-8") as f:
+                f.write("GEMINI_API_KEY=\n")                       # vacía no cuenta
+            self.assertIsNotNone(an.gemini_auth_note(by_key, env))
+            os.environ["GOOGLE_API_KEY"] = "x"
+            self.assertIsNone(an.gemini_auth_note(by_key, env))
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
     def test_exit_command(self):
         self.assertEqual(an.EXIT_COMMAND, {"claude": "/exit", "gemini": "/quit"})

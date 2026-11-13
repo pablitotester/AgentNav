@@ -15,7 +15,11 @@
       "obra",
       {
         "name": "gem",
-        "kind": "gemini"
+        "kind": "gemini",
+        "args": [
+          "-m",
+          "gemini-3.1-flash-lite"
+        ]
       }
     ],
     "continue": true

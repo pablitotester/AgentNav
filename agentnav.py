@@ -59,6 +59,7 @@ CLAUDE_PROJECTS = os.path.join(CLAUDE_HOME, "projects")
 GEMINI_HOME = os.environ.get("GEMINI_CLI_HOME") or os.path.join(USERPROFILE, ".gemini")
 GEMINI_TMP = os.path.join(GEMINI_HOME, "tmp")  # <id del proyecto>\\chats\\session-<fecha>-<8 del sid>.jsonl
 GEMINI_REGISTRY = os.path.join(GEMINI_HOME, "projects.json")  # {"projects": {"<ruta en minúsculas>": "<id>"}}
+GEMINI_ENV = os.path.join(GEMINI_HOME, ".env")  # GEMINI_API_KEY=… cuando el login es por clave (selectedType gemini-api-key)
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentNav")
 JOURNAL_DIR = os.path.join(STATE_DIR, "journal")
 FOCUS_LOG = os.path.join(STATE_DIR, "focus.log")  # lo escribe plugin\focus.py en cada pane.focused: "<espacio> <panel>"
@@ -2717,6 +2718,37 @@ def gemini_hook_status(settings):
     return have, missing
 
 
+def gemini_api_key_present(env_path=None):
+    """Hay clave de Gemini: GEMINI_API_KEY o GOOGLE_API_KEY en el entorno, o una línea así en ~/.gemini/.env."""
+    if any(os.environ.get(k) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY")):
+        return True
+    try:
+        with open(env_path or GEMINI_ENV, encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?(GEMINI_API_KEY|GOOGLE_API_KEY)\s*=\s*(\S+)", line)
+                if m and m.group(2).strip("\"'"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def gemini_auth_note(settings, env_path=None):
+    """Aviso (None, texto) si Gemini no va a poder autenticarse: login por clave (security.auth.selectedType
+    gemini-api-key) sin clave en el entorno ni en ~/.gemini/.env, o ningún tipo de login elegido y tampoco clave
+    (el primer arranque pide elegir). Con oauth u otro tipo elegido no se opina. None si está bien."""
+    auth = ((settings or {}).get("security") or {}).get("auth") or {}
+    sel = str(auth.get("selectedType") or "")
+    if sel and sel != "gemini-api-key":
+        return None
+    if gemini_api_key_present(env_path):
+        return None
+    where = os.path.dirname(env_path or GEMINI_ENV)
+    if sel == "gemini-api-key":
+        return None, f"Gemini sin API key: login por clave elegido pero no hay GEMINI_API_KEY (ni en {where}\\.env ni en el entorno)"
+    return None, f"Gemini sin login configurado: ni API key en {where}\\.env ni security.auth.selectedType en settings.json (lo pide al arrancar)"
+
+
 def gemini_checks(projects=None):
     """Bloque "Gemini CLI" de doctor: sólo si algún proyecto/agente es gemini o gemini está en el PATH. Lista de
     (ok, texto) como las demás comprobaciones."""
@@ -2742,6 +2774,9 @@ def gemini_checks(projects=None):
         else:
             out.append((None if not uses else False,
                         f"settings.json de Gemini: faltan los hooks {', '.join(missing)} (el estado de cada Gemini no llega a Herdr): installer\\install.ps1 -ConGemini"))
+        note = gemini_auth_note(settings)
+        if note:
+            out.append(note)
     except AgentNavError as e:
         out.append((None if not uses else False, str(e)))
     if uses:

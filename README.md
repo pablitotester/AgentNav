@@ -114,6 +114,17 @@ servidor propio.
 
 ## Gemini CLI
 
+### Instalar Gemini
+
+El instalador no trae Gemini CLI salvo que se lo pidas: `install.ps1 -ConGemini` (apagado por defecto). Con eso agrega
+dos requisitos, **Node.js LTS** (winget `OpenJS.NodeJS.LTS`; sin winget, el `.msi` x64 de la última LTS según
+`nodejs.org/dist/index.json`) y **Gemini CLI** (`npm install -g @google/gemini-cli`, que deja `gemini.cmd` en
+`%APPDATA%\npm`), y en el paso de hooks corre `configurar.py gemini-hooks` para registrar `agentnav-state.ps1` en
+`%USERPROFILE%\.gemini\settings.json` sin tocar lo demás que haya ahí (Antigravity guarda lo suyo en esa carpeta), con
+backup. Herdr 0.9.5 no tiene `herdr integration install gemini`, así que no hay hook propio de Herdr para Gemini. Con
+`-SinRequisitos -ConGemini` sólo registra los hooks y avisa si falta `gemini`. La primera vez que corre, Gemini pide
+iniciar sesión con una cuenta de Google.
+
 ### Proyectos y agentes Gemini
 
 Un proyecto o un agente con `"kind": "gemini"` arranca Gemini CLI en vez de Claude Code (Herdr lo conoce: `agent start
@@ -141,6 +152,20 @@ está en el PATH o algún proyecto lo usa: versión instalada y si los seis hook
 `%USERPROFILE%\.gemini\settings.json` (`SessionStart`, `BeforeAgent`, `AfterAgent`, `SessionEnd`, `Notification`,
 `AfterTool`, todos con `agentnav-state.ps1 <acción> gemini` o `agentnav-unblock.cmd gemini`); si faltan, el estado de
 cada Gemini no llega a Herdr y lo pone el instalador (`installer\install.ps1 -ConGemini`).
+
+### Hook de Gemini
+
+El mismo `agentnav-state.ps1` atiende a Gemini CLI: se registra en `%USERPROFILE%\.gemini\settings.json` con el
+segundo argumento `gemini` (`configurar.py gemini-hooks <settings.json de Gemini> <carpeta de hooks>`, que respeta
+lo que ya haya en ese archivo, por ejemplo los `mcpServers` de Antigravity, y deja un `.bak-agentnav-<fecha>`).
+Eventos: SessionStart → `start` (idle + id de sesión y `gemini --resume <id>` como comando de reanudación, lo que
+para Claude hace el hook de Herdr), BeforeAgent → `prompt`, AfterAgent → `stop`, SessionEnd → `end`, Notification
+(ToolPermission) → `notify`, AfterTool → `& agentnav-unblock.cmd gemini` (Gemini corre los comandos en PowerShell; la
+puerta mira `GEMINI_SESSION_ID`). Estado, etiqueta del panel, diario y aviso ntfy
+funcionan igual que con Claude; el registro de Claude no cambia. Diferencias: Gemini no manda `idle_prompt`, así que
+un turno cortado con Esc queda "working" hasta el próximo evento; no resume la conversación en el título de la
+terminal, así que la etiqueta del panel lleva siempre el último pedido; y su `timeout` de hook se cuenta en
+milisegundos (10000).
 
 ## Herdr propio: los temas dentro de la pantalla de settings
 
@@ -198,19 +223,6 @@ y `agentnav doctor`. Volver a correrlo actualiza sin perder `settings.json` ni `
 
 Mandalo por WhatsApp, Drive o un pendrive: Gmail rechaza zips con `.cmd` adentro.
 
-## Gemini CLI
-
-### Instalar Gemini
-
-El instalador no trae Gemini CLI salvo que se lo pidas: `install.ps1 -ConGemini` (apagado por defecto). Con eso agrega
-dos requisitos, **Node.js LTS** (winget `OpenJS.NodeJS.LTS`; sin winget, el `.msi` x64 de la última LTS según
-`nodejs.org/dist/index.json`) y **Gemini CLI** (`npm install -g @google/gemini-cli`, que deja `gemini.cmd` en
-`%APPDATA%\npm`), y en el paso de hooks corre `configurar.py gemini-hooks` para registrar `agentnav-state.ps1` en
-`%USERPROFILE%\.gemini\settings.json` sin tocar lo demás que haya ahí (Antigravity guarda lo suyo en esa carpeta), con
-backup. Herdr 0.9.5 no tiene `herdr integration install gemini`, así que no hay hook propio de Herdr para Gemini. Con
-`-SinRequisitos -ConGemini` sólo registra los hooks y avisa si falta `gemini`. La primera vez que corre, Gemini pide
-iniciar sesión con una cuenta de Google.
-
 ## Etiqueta de cada panel
 
 Arriba de cada panel con agente, en el borde, Herdr muestra `<agente> · <tarea>`: el nombre que le dio Herdr al agente
@@ -221,22 +233,6 @@ lo borra al cerrar la sesión. Al arrancar un agente desde `open` o `tab`, Agent
 pedido. Un panel sin agente no lleva etiqueta; si se lanza `claude` a mano en esa consola, aparece con su primer pedido.
 Herdr recorta el texto si el panel es angosto. Un panel idle no genera eventos, así que `agentnav app` (el acceso
 directo) etiqueta a todos los agentes vivos al arrancar, y `agentnav labels` lo hace a mano cuando haga falta.
-
-## Gemini CLI
-
-### Hook de Gemini
-
-El mismo `agentnav-state.ps1` atiende a Gemini CLI: se registra en `%USERPROFILE%\.gemini\settings.json` con el
-segundo argumento `gemini` (`configurar.py gemini-hooks <settings.json de Gemini> <carpeta de hooks>`, que respeta
-lo que ya haya en ese archivo, por ejemplo los `mcpServers` de Antigravity, y deja un `.bak-agentnav-<fecha>`).
-Eventos: SessionStart → `start` (idle + id de sesión y `gemini --resume <id>` como comando de reanudación, lo que
-para Claude hace el hook de Herdr), BeforeAgent → `prompt`, AfterAgent → `stop`, SessionEnd → `end`, Notification
-(ToolPermission) → `notify`, AfterTool → `& agentnav-unblock.cmd gemini` (Gemini corre los comandos en PowerShell; la
-puerta mira `GEMINI_SESSION_ID`). Estado, etiqueta del panel, diario y aviso ntfy
-funcionan igual que con Claude; el registro de Claude no cambia. Diferencias: Gemini no manda `idle_prompt`, así que
-un turno cortado con Esc queda "working" hasta el próximo evento; no resume la conversación en el título de la
-terminal, así que la etiqueta del panel lleva siempre el último pedido; y su `timeout` de hook se cuenta en
-milisegundos (10000).
 
 ## Límites conocidos del estado
 

@@ -1481,20 +1481,25 @@ def cmd_app(say=print):
     return 0
 
 
-def start_update_check(fetch_timeout=15):
-    """Lanza en un hilo el `update --check` (repo_status con fetch). Devuelve el hilo con .result = estado | AgentNavError."""
+def in_thread(fn, name="agentnav-bg"):
+    """Corre fn() en un hilo daemon. Devuelve el hilo con .result = lo que devolvió fn, o la AgentNavError que levantó."""
     import threading
 
     def work():
         try:
-            t.result = repo_status(fetch_timeout=fetch_timeout)
+            t.result = fn()
         except AgentNavError as e:
             t.result = e
 
-    t = threading.Thread(target=work, name="agentnav-update-check", daemon=True)
+    t = threading.Thread(target=work, name=name, daemon=True)
     t.result = None
     t.start()
     return t
+
+
+def start_update_check(fetch_timeout=15):
+    """Lanza en un hilo el `update --check` (repo_status con fetch). Devuelve el hilo con .result = estado | AgentNavError."""
+    return in_thread(lambda: repo_status(fetch_timeout=fetch_timeout), "agentnav-update-check")
 
 
 def update_notice(st):
@@ -2870,6 +2875,13 @@ def cmd_doctor():
     def check(ok, text):
         results.append((ok, text))
 
+    # Lo que tarda (git fetch a origin ~1 s, un pwsh para las versiones ~0,4 s) arranca ya en hilos, en paralelo con
+    # el resto de las comprobaciones, y se recoge donde se informa.
+    origin_t = start_update_check(fetch_timeout=10) if shutil.which("git") else None
+    sh = default_shell()
+    sh_exe = shutil.which(sh) if sh else None
+    shell_t = (in_thread(lambda: shell_versions(sh_exe), "agentnav-shell-versions")
+               if sh_exe and os.path.basename(sh_exe).lower() in ("pwsh.exe", "powershell.exe") else None)
     # Herdr
     try:
         hb = herdr_bin()
@@ -2916,9 +2928,10 @@ def cmd_doctor():
     except OSError:
         check(False, f"no encuentro {cfg_path}")
     # El shell de cada panel: que exista el que pide el config y qué PSReadLine trae
-    sh = default_shell()
-    exe = shutil.which(sh) if sh else None
-    check(*shell_check(sh, exe, shell_versions(exe) if exe and os.path.basename(exe).lower() in ("pwsh.exe", "powershell.exe") else ("", "")))
+    if shell_t:
+        shell_t.join(20)
+    versions = shell_t.result if shell_t and isinstance(shell_t.result, tuple) else ("", "")
+    check(*shell_check(sh, sh_exe, versions))
     # Plugin de Herdr (gancho tab.created → agentnav adopt)
     try:
         plugins = api("plugin", "list", "--json").get("plugins") or []
@@ -3027,9 +3040,14 @@ def cmd_doctor():
           else f"Python de {bits} bits: el escaneo de procesos no funciona y 'continue' podría pisar una conversación abierta afuera")
     check(bool(shutil.which("git")), "git (para rama y cambios en el selector)")
     # El repo frente a origin (sin red no demora más que el timeout del fetch, y nunca es ✖)
-    if shutil.which("git"):
-        try:
-            st = repo_status(fetch_timeout=10)
+    if origin_t:
+        origin_t.join(15)
+        st = origin_t.result
+        if isinstance(st, AgentNavError):
+            check(None, str(st))
+        elif st is None:
+            check(None, "no pude consultar origin: el fetch no terminó a tiempo")
+        else:
             if st["fetch_error"]:
                 check(None, f"no pude consultar origin: {st['fetch_error']}")
             elif _sin_upstream(st):
@@ -3042,8 +3060,6 @@ def cmd_doctor():
                 check(None, f"{st['ahead']} commit(s) locales en {HOME} sin pushear a origin")
             if st["dirty"]:
                 check(None, f"cambios locales sin commitear en {HOME}")
-        except AgentNavError as e:
-            check(None, str(e))
     # Herdr propio (fork con temas)
     repo = fork_repo()
     if repo:

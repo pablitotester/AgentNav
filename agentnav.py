@@ -1046,11 +1046,15 @@ SECRET_RE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]
 def agent_label(a, hint=""):
     """La etiqueta del panel con la misma regla que Pane-Label del hook: el nombre que Herdr le dio al agente (o su
     tipo), y la tarea = título que Claude Code puso a la conversación; mientras siga en "Claude Code", `hint` (el
-    último pedido). Gemini CLI no resume la conversación en el título: con él va siempre el último pedido si lo hay.
-    Una línea, 60 caracteres, sin comillas dobles ni nada con pinta de clave."""
+    último pedido). Con cualquier otro agente el título no se usa nunca: Gemini CLI pone ahí sólo su estado
+    ("◇ Ready (carpeta)", "✦ Working…"), así que va el último pedido o nada. Una línea, 60 caracteres, sin comillas
+    dobles ni nada con pinta de clave."""
     name = str(a.get("name") or a.get("agent") or "agente")
-    task = str(a.get("terminal_title_stripped") or "").strip()
-    if not task or task in ("Claude Code", "Gemini", "Gemini CLI") or (a.get("agent") not in (None, "", "claude") and hint):
+    if a.get("agent") in (None, "", "claude"):
+        task = str(a.get("terminal_title_stripped") or "").strip()
+        if not task or task == "Claude Code":
+            task = str(hint or "")
+    else:
         task = str(hint or "")
     task = re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", task).replace('"', "'").strip()
     if SECRET_RE.search(task):

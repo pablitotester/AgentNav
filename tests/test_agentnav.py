@@ -530,11 +530,11 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.gemini_hook_status({"hooks": {"BeforeAgent": [{"hooks": [{"command": cmd.format("prompt").replace(" gemini", "")}]}]}})[0], [])
 
     def test_agent_label_gemini(self):
-        g = {"name": "gem", "agent": "gemini", "terminal_title_stripped": "Gemini CLI"}
+        g = {"name": "gem", "agent": "gemini", "terminal_title_stripped": "◇  Ready (proj)"}  # título real de Gemini: su estado
         self.assertEqual(an.agent_label(g, "arreglá el build"), "gem · arreglá el build")
-        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), "arreglá el build"), "gem · arreglá el build")
-        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), ""), "gem · C:\\Obra")
-        self.assertEqual(an.agent_label(g, ""), "gem")
+        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="✦  Working… (proj)"), "arreglá el build"), "gem · arreglá el build")
+        self.assertEqual(an.agent_label(g, ""), "gem")                       # sin pedido: el nombre solo, nunca el título
+        self.assertEqual(an.agent_label({"name": "cx", "agent": "codex", "terminal_title_stripped": "x"}, ""), "cx")
         c = {"name": "obra", "agent": "claude", "terminal_title_stripped": "Arreglo del build"}
         self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
 

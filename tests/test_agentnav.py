@@ -3,10 +3,12 @@
     py -X utf8 -m unittest discover -s tests
 
 Lo que toca disco va a carpetas temporales (JOURNAL_DIR, CLAUDE_PROJECTS se reemplazan en el módulo)."""
+import json
 import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -352,6 +354,175 @@ class AvisoDeUpdate(unittest.TestCase):
         self.assertEqual(calls[0][:3], ("notification", "show", "AgentNav: 2 commits nuevos en origin/main"))
         self.assertIn("--body", calls[0])
         self.assertTrue(any("al día" in s for s in said))
+
+
+class Gemini(unittest.TestCase):
+    """Gemini CLI como tipo de agente: new --kind, sesiones en ~/.gemini/tmp, continue, procesos, doctor."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.old = (an.JOURNAL_DIR, an.CLAUDE_PROJECTS, an.GEMINI_TMP, an.GEMINI_REGISTRY, an.PROJECTS_PATH, an._outside_agents,
+                    an.RECENT_SKIP)
+        an.RECENT_SKIP = ()  # el directorio temporal cae en AppData\\Local\\Temp
+        an.JOURNAL_DIR = os.path.join(t, "journal")
+        an.CLAUDE_PROJECTS = os.path.join(t, "claude-projects")
+        an.GEMINI_TMP = os.path.join(t, "gemini", "tmp")
+        an.GEMINI_REGISTRY = os.path.join(t, "gemini", "projects.json")
+        an.PROJECTS_PATH = os.path.join(t, "projects.json")
+        an._outside_agents = lambda path, kind: []
+        for d in (an.JOURNAL_DIR, an.CLAUDE_PROJECTS, an.GEMINI_TMP):
+            os.makedirs(d)
+        self.proj = os.path.join(t, "Obra")
+        os.makedirs(self.proj)
+        an._claude_project_dirs.cache_clear()
+        an._gemini_registry.cache_clear()
+
+    def tearDown(self):
+        (an.JOURNAL_DIR, an.CLAUDE_PROJECTS, an.GEMINI_TMP, an.GEMINI_REGISTRY, an.PROJECTS_PATH, an._outside_agents,
+         an.RECENT_SKIP) = self.old
+        an._claude_project_dirs.cache_clear()
+        an._gemini_registry.cache_clear()
+        self.tmp.cleanup()
+
+    def _registry(self, slug, path=None):
+        with open(an.GEMINI_REGISTRY, "w", encoding="utf-8") as f:
+            json.dump({"projects": {an._gemini_norm(path or self.proj): slug}}, f)
+        an._gemini_registry.cache_clear()
+        d = os.path.join(an.GEMINI_TMP, slug)
+        os.makedirs(os.path.join(d, "chats"), exist_ok=True)
+        with open(os.path.join(d, ".project_root"), "w", encoding="utf-8") as f:
+            f.write(an._gemini_norm(path or self.proj) + "\n")
+        return d
+
+    def _session(self, d, stamp, sid, age=0):
+        name = f"session-{stamp}-{sid[:8]}.jsonl"
+        p = os.path.join(d, "chats", name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": sid, "projectHash": "x", "startTime": stamp, "kind": "main"}) + "\n")
+        os.utime(p, (time.time() - age, time.time() - age))
+        return p
+
+    def test_new_args(self):
+        self.assertEqual(an._new_args(["Foo"]), ("Foo", "", "claude"))
+        self.assertEqual(an._new_args(["Foo", "C:\\x y", "--gemini"]), ("Foo", "C:\\x y", "gemini"))
+        self.assertEqual(an._new_args(["--kind", "Gemini", "Foo"]), ("Foo", "", "gemini"))
+        self.assertEqual(an._new_args(["--kind=codex", "Foo"]), ("Foo", "", "codex"))
+        for bad in (["--kind", "shell", "x"], ["--raro", "x"], [], ["--kind"]):
+            with self.assertRaises(an.AgentNavError, msg=bad):
+                an._new_args(bad)
+
+    def test_add_project_kind(self):
+        an.add_project("Obra", self.proj, "gemini")
+        an.add_project("Otra", self.proj + "2")
+        ps = an.load_projects()
+        self.assertEqual([(p["name"], p["kind"], p["agents"][0]["kind"], p["agents"][0]["continue"]) for p in ps],
+                         [("Obra", "gemini", "gemini", True), ("Otra", "claude", "claude", True)])
+
+    def test_is_agent_proc(self):
+        gem = {"pid": 2, "ppid": 1, "name": "node.exe",
+               "cmd": 'node "C:\\Users\\p\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\bundle\\gemini.js" -r latest'}
+        child = dict(gem, pid=3, ppid=2)  # Gemini se relanza a sí mismo (GEMINI_CLI_NO_RELAUNCH): el hijo no cuenta
+        cla = {"pid": 4, "ppid": 1, "name": "claude.exe", "cmd": "claude --continue"}
+        srv = {"pid": 5, "ppid": 1, "name": "node.exe", "cmd": "node C:\\x\\patapim-browser-server.js"}
+        by = {p["pid"]: p for p in (gem, child, cla, srv)}
+        self.assertTrue(an._is_agent_proc(gem, "gemini", by))
+        self.assertFalse(an._is_agent_proc(child, "gemini", by))
+        self.assertFalse(an._is_agent_proc(gem, "claude", by))
+        self.assertTrue(an._is_agent_proc(cla, "claude", by))
+        self.assertFalse(an._is_agent_proc(srv, "gemini", by))
+        self.assertFalse(an._is_agent_proc(srv, "claude", by))
+
+    def test_sessions_y_project_dir(self):
+        self.assertEqual(an.gemini_sessions(self.proj), [])
+        self.assertIsNone(an.gemini_project_dir(self.proj))
+        d = self._registry("obra")
+        self.assertEqual(an.gemini_project_dir(self.proj.upper()), d)       # el registro guarda minúsculas
+        old = self._session(d, "2026-11-12T10-00-00", "aaaaaaaa-1111-2222-3333-444444444444", age=100)
+        new = self._session(d, "2026-11-13T10-00-00", "bbbbbbbb-1111-2222-3333-444444444444")
+        self.assertEqual(an.gemini_sessions(self.proj), [(new, "bbbbbbbb"), (old, "aaaaaaaa")])
+        self.assertTrue(an.has_gemini_conversation(self.proj))
+        self.assertEqual(an.gemini_session_file(self.proj, "AAAAAAAA-1111"), old)
+        self.assertIsNone(an.gemini_session_file(self.proj, "cccccccc"))
+        self.assertEqual(an._gemini_newest_sid(self.proj), "bbbbbbbb-1111-2222-3333-444444444444")
+        # sin registro, por el .project_root
+        os.remove(an.GEMINI_REGISTRY)
+        an._gemini_registry.cache_clear()
+        self.assertEqual(an.gemini_project_dir(self.proj), d)
+
+    def test_recent_gemini(self):
+        d = self._registry("obra")
+        self._session(d, "2026-11-13T10-00-00", "bbbbbbbb-1111-2222-3333-444444444444")
+        rs = an.recent_projects([], 5)
+        self.assertEqual([(r["path"].lower(), r["kind"]) for r in rs], [(self.proj.lower(), "gemini")])
+        self.assertEqual(an.recent_projects([{"path": self.proj}], 5), [])   # registrada: no sale
+        # un tmp sin sesiones no cuenta
+        self._registry("vacio", self.proj + "2")
+        self.assertEqual(len(an.recent_projects([], 5)), 1)
+
+    def test_last_herdr_session_gemini(self):
+        d = self._registry("obra")
+        self._session(d, "2026-11-12T10-00-00", "aaaaaaaa-1111-2222-3333-444444444444", age=100)
+        self._session(d, "2026-11-13T10-00-00", "bbbbbbbb-1111-2222-3333-444444444444")
+        with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "w", encoding="utf-8") as f:  # el hook anota 8 del sid
+            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb", "prompt", "hola")) + "\n")
+            f.write("\t".join(("10:01:00", self.proj, "aaaaaaaa", "prompt", "otra")) + "\n")
+            f.write("\t".join(("10:02:00", self.proj, "99999999", "prompt", "de claude")) + "\n")
+        # la última con pedidos en Herdr que Gemini todavía guarde, con el uuid entero del archivo; la de Claude
+        # (sin archivo de Gemini) se saltea
+        self.assertEqual(an.last_herdr_session(self.proj, kind="gemini"), "aaaaaaaa-1111-2222-3333-444444444444")
+        self.assertEqual(an.last_herdr_session(self.proj, exclude={"AAAAAAAA-1111-2222-3333-444444444444"}, kind="gemini"),
+                         "bbbbbbbb-1111-2222-3333-444444444444")
+        self.assertIsNone(an.last_herdr_session(self.proj, kind="claude"))   # Claude no tiene esa carpeta
+
+    def test_gemini_continue_args(self):
+        a = {"name": "g", "kind": "gemini", "continue": True, "args": []}
+        said = []
+        self.assertEqual(an._continue_args(a, self.proj, said.append, set(), False), [])   # sin sesiones: nada
+        d = self._registry("obra")
+        self._session(d, "2026-11-13T10-00-00", "bbbbbbbb-1111-2222-3333-444444444444")
+        self.assertEqual(an._continue_args(a, self.proj, said.append, set(), False), ["--resume", "latest"])
+        self.assertEqual(an._continue_args(a, self.proj, said.append, set(), True), [])   # otro Gemini del proyecto
+        self.assertTrue(any("otro Gemini" in s for s in said))
+        with open(os.path.join(an.JOURNAL_DIR, "2026-11-13.log"), "w", encoding="utf-8") as f:
+            f.write("\t".join(("10:00:00", self.proj, "bbbbbbbb", "stop", "")) + "\n")
+        used = set()
+        self.assertEqual(an._continue_args(a, self.proj, said.append, used, True), ["--resume", "bbbbbbbb-1111-2222-3333-444444444444"])
+        self.assertEqual(an._continue_args(a, self.proj, said.append, used, False), ["--resume", "latest"])  # ya usada
+        # uno de afuera con esa sesión: no se retoma ni por id ni por latest
+        an._outside_agents = lambda path, kind: [{"cmd": "node gemini.js --resume bbbbbbbb-1111-2222-3333-444444444444"}] if kind == "gemini" else []
+        said.clear()
+        self.assertEqual(an._continue_args(a, self.proj, said.append, set(), False), [])
+        self.assertTrue(any("otra terminal" in s for s in said))
+        self.assertEqual(an.sids_outside_herdr(self.proj, "gemini"), {"bbbbbbbb-1111-2222-3333-444444444444"})
+        an._outside_agents = lambda path, kind: [{"cmd": "node gemini.js -r latest"}]
+        self.assertEqual(an.sids_outside_herdr(self.proj, "gemini"), {"bbbbbbbb-1111-2222-3333-444444444444"})
+        # un tipo que no sabemos retomar
+        self.assertEqual(an._continue_args(dict(a, kind="codex"), self.proj, said.append, set(), False), [])
+
+    def test_gemini_hook_status(self):
+        cmd = 'powershell -NoProfile -File "C:\\u\\.claude\\hooks\\agentnav-state.ps1" {} gemini'
+        hooks = {ev: [{"hooks": [{"type": "command", "command": cmd.format(ac)}]}]
+                 for ev, ac in (("SessionStart", "start"), ("BeforeAgent", "prompt"), ("AfterAgent", "stop"),
+                                ("SessionEnd", "end"), ("Notification", "notify"))}
+        have, missing = an.gemini_hook_status({"hooks": hooks})
+        self.assertEqual(missing, ["AfterTool"])
+        hooks["AfterTool"] = [{"hooks": [{"type": "command", "command": '"C:\\u\\.claude\\hooks\\agentnav-unblock.cmd" gemini'}]}]
+        self.assertEqual(an.gemini_hook_status({"hooks": hooks}), ([ev for ev, _ in an.GEMINI_HOOK_EVENTS], []))
+        self.assertEqual(an.gemini_hook_status({})[0], [])
+        self.assertEqual(an.gemini_hook_status({"hooks": {"BeforeAgent": [{"hooks": [{"command": cmd.format("prompt").replace(" gemini", "")}]}]}})[0], [])
+
+    def test_agent_label_gemini(self):
+        g = {"name": "gem", "agent": "gemini", "terminal_title_stripped": "Gemini CLI"}
+        self.assertEqual(an.agent_label(g, "arreglá el build"), "gem · arreglá el build")
+        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), "arreglá el build"), "gem · arreglá el build")
+        self.assertEqual(an.agent_label(dict(g, terminal_title_stripped="C:\\Obra"), ""), "gem · C:\\Obra")
+        self.assertEqual(an.agent_label(g, ""), "gem")
+        c = {"name": "obra", "agent": "claude", "terminal_title_stripped": "Arreglo del build"}
+        self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
+
+    def test_exit_command(self):
+        self.assertEqual(an.EXIT_COMMAND, {"claude": "/exit", "gemini": "/quit"})
 
 
 if __name__ == "__main__":

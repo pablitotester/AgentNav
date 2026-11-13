@@ -7,5 +7,17 @@
     ],
     "kind": "claude",
     "continue": true
+  },
+  {
+    "name": "Obra",
+    "path": "C:\\Obra",
+    "agents": [
+      "obra",
+      {
+        "name": "gem",
+        "kind": "gemini"
+      }
+    ],
+    "continue": true
   }
 ]

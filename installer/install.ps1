@@ -2,12 +2,15 @@
 AgentNav: instalador para otra PC con Windows 10/11, desde cero. Viene dentro de AgentNav-setup.zip junto con una
 copia del repo (carpeta payload\). Lo normal es hacer doble clic en Instalar.cmd; a mano:
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 [-HerdrOficial] [-SinRequisitos]
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 [-HerdrOficial] [-SinRequisitos] [-ConGemini]
 
 Qué hace, en orden (cada paso se saltea si ya está):
  1. Requisitos: Python 3.11+ de 64 bits con el lanzador `py`, git, PowerShell 7 (pwsh), Windows Terminal, Claude Code
     y Herdr. Usa winget; si winget no está, Python, git y pwsh se bajan de su sitio oficial / GitHub.
     Herdr se instala con los temas de AgentNav (fork pablitotester/herdr); con -HerdrOficial, el de herdr.dev.
+    Con -ConGemini (apagado por defecto) también Node.js LTS (winget OpenJS.NodeJS.LTS; sin winget, el .msi de
+    nodejs.org) y Gemini CLI (`npm install -g @google/gemini-cli`), y en el paso 3 registra los hooks de AgentNav en
+    %USERPROFILE%\.gemini\settings.json sin tocar lo demás que haya ahí.
  2. Deja AgentNav en C:\AgentNav (la ruta es fija: la config de Herdr, el plugin y los .vbs la tienen escrita): clon de
     GitHub si hay git y acceso al repo (entonces `agentnav update` trae lo nuevo), si no la copia del zip (payload\).
     Con -SinGit siempre la copia. settings.json y projects.json existentes no se pisan.
@@ -23,6 +26,7 @@ param(
     [switch]$HerdrOficial,
     [switch]$SinRequisitos,
     [switch]$SinGit,
+    [switch]$ConGemini,
     [string]$ForkRepo = "pablitotester/herdr",
     [string]$RepoUrl = "https://github.com/pablitotester/AgentNav.git"
 )
@@ -38,6 +42,7 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Payload = Join-Path $Here "payload"
 $ClaudeHome = Join-Path $env:USERPROFILE ".claude"
 $HooksDir = Join-Path $ClaudeHome "hooks"
+$GeminiHome = Join-Path $env:USERPROFILE ".gemini"   # también lo usa Antigravity: su settings.json se completa, no se pisa
 $Problemas = New-Object System.Collections.ArrayList
 
 function Step([string]$m) { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
@@ -53,7 +58,8 @@ function Refresh-Path {
         (Join-Path $env:USERPROFILE ".herdr\packages\standalone\current"),      # herdr
         (Join-Path $env:LOCALAPPDATA "Programs\Python\Launcher"),               # py (instalación por usuario)
         (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"),                  # wt
-        "C:\Program Files\PowerShell\7", "C:\Program Files\Git\cmd"
+        (Join-Path $env:APPDATA "npm"),                                         # gemini (npm -g deja ahí el .cmd)
+        "C:\Program Files\PowerShell\7", "C:\Program Files\Git\cmd", "C:\Program Files\nodejs"
     )
     $env:Path = (@($m, $u) + $extra | Where-Object { $_ }) -join ";"
 }
@@ -104,6 +110,15 @@ function Run-Installer([string]$url, [string[]]$arguments, [string]$ext) {
         }
         if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "el instalador salió con código $($p.ExitCode)" }
     } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+
+function NodeJs-LatestLtsMsi {
+    # nodejs.org/dist/index.json lista todas las versiones; "lts" es false o el nombre de la línea LTS. La primera con
+    # nombre es la LTS más nueva. Instalador x64 .msi: node-vX.Y.Z-x64.msi.
+    $idx = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -UseBasicParsing -Headers @{ "User-Agent" = "AgentNav-install" }
+    $lts = $idx | Where-Object { $_.lts } | Select-Object -First 1
+    if ($null -eq $lts) { throw "no encontré una versión LTS en nodejs.org/dist/index.json" }
+    return "https://nodejs.org/dist/$($lts.version)/node-$($lts.version)-x64.msi"
 }
 
 function Requisito([string]$nombre, [scriptblock]$presente, [scriptblock]$instalar) {
@@ -183,11 +198,27 @@ if (-not $SinRequisitos) {
         }
     }
 
+    if ($ConGemini) {
+        Requisito "Node.js LTS (node y npm)" { (Have "node") -and (Have "npm") } {
+            if (Have-Winget) {
+                if (-not (Winget-Install "OpenJS.NodeJS.LTS" "")) { throw "winget devolvió $LASTEXITCODE" }
+            } else {
+                Run-Installer (NodeJs-LatestLtsMsi) @("/qn", "/norestart") ".msi"
+            }
+        }
+        Requisito "Gemini CLI" { Have "gemini" } {
+            if (-not (Have "npm")) { throw "sin npm (Node.js) no puedo instalar Gemini CLI" }
+            & npm install -g @google/gemini-cli 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "npm install -g @google/gemini-cli devolvió $LASTEXITCODE" }
+        }
+    }
+
     if (-not (Test-Python)) { throw "sin Python 3.11+ de 64 bits no puedo seguir (ver avisos arriba)" }
     if (-not (Have "herdr")) { throw "sin Herdr no puedo seguir (ver avisos arriba)" }
 } else {
     if (-not (Test-Python)) { throw "falta Python 3.11+ de 64 bits con py" }
     if (-not (Have "herdr")) { throw "falta Herdr" }
+    if ($ConGemini -and -not (Have "gemini")) { Write-Host "    -ConGemini con -SinRequisitos: falta Gemini CLI; registro los hooks igual" }
 }
 
 # ------------------------------------------------------------------------------------------------ 2. archivos
@@ -287,6 +318,23 @@ try {
     & herdr integration install claude | Out-Host
     Ok "integración de Herdr con Claude Code (hook SessionStart)"
 } catch { Aviso "herdr integration install claude falló: $($_.Exception.Message)" }
+
+# ------------------------------------------------------------------------------------------------ 3b. hooks de Gemini CLI
+if ($ConGemini) {
+    Step "Hooks de Gemini CLI"
+    # Los mismos agentnav-state.ps1 y agentnav-unblock.cmd (ya copiados a $HooksDir) atienden a Gemini con sus seis
+    # eventos (SessionStart, BeforeAgent, AfterAgent, SessionEnd, Notification y AfterTool, el desbloqueo tras un permiso).
+    # configurar.py gemini-hooks los registra en el settings.json de Gemini sin tocar lo demás (Antigravity guarda lo
+    # suyo ahí), con backup. Gemini corre los comandos de hook en PowerShell. Herdr 0.9.5 no tiene `integration install gemini`.
+    New-Item -ItemType Directory -Force -Path $GeminiHome | Out-Null
+    & py -3 -I -X utf8 $configurar gemini-hooks (Join-Path $GeminiHome "settings.json") $HooksDir | Out-Host
+    if ($LASTEXITCODE -ne 0) { Aviso "no pude registrar los hooks en el settings.json de Gemini CLI" }
+    if (Have "gemini") {
+        Write-Host "    la primera vez, `gemini` pide iniciar sesión con tu cuenta de Google"
+    } else {
+        Aviso "los hooks de Gemini quedaron registrados, pero falta el comando gemini: npm install -g @google/gemini-cli"
+    }
+}
 
 # ------------------------------------------------------------------------------------------------ 4. Herdr y Windows
 Step "Config de Herdr"

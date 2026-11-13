@@ -30,6 +30,11 @@ una función en `src/app/state.rs`. Por eso el único camino es compilar.
   alrededor de `render_agent_panel`), `src/client/shell/agent_sidebar.rs` (el botón `tree`),
   `src/client/shell/mouse.rs` (click izquierdo, click derecho y rueda), `src/client/shell/preferences.rs` (un campo
   opcional), `src/client/shell/config.rs` (guardarlo) y `src/client/mod.rs` (`| shell.tick_folder_tree()` en el timer).
+- Retención del cursor configurable (Windows), marcada con `// AgentNav`: `src/pane/cursor.rs` (las ventanas salen de un
+  `OnceLock` en vez de las constantes de 20/100 ms; `settle_enabled()`), `src/pane/terminal.rs` (`cursor_position_settle_enabled()`
+  en vez de `const … = cfg!(windows)`), `src/pane.rs` (re-export), `src/config/model.rs` (`[advanced] cursor_settle_ms`,
+  `cursor_jump_hold_ms`), `src/main.rs` (ayuda en `--default-config`) y `src/app/mod.rs` (se fijan en `App::new` y
+  `new_from_handoff`). Ver «Cursor que va atrás de las teclas».
 - `.github/workflows/agentnav-build.yml` y esta carpeta.
 
 Reglas de los tests de upstream que las paletas cumplen: `sidebar_bg = Color::Reset`, contraste fondo/fila activa ≥ 1.05,
@@ -51,6 +56,26 @@ texto/fila activa ≥ 3.0, lo mismo para la fila de selección, y selección ≠
 Un **push a esta rama** que toque `src/`, `Cargo.*`,
 `build.rs` o el workflow recompila y reemplaza los archivos del release actual (misma versión, exe nuevo). El release
 siempre queda marcado como *latest*: de eso depende la URL del manifiesto.
+
+## Cursor que va atrás de las teclas
+
+Sólo en Windows, Herdr (desde 0.9.2) retiene la posición del cursor del panel antes de mostrarla para que ConPTY no lo
+haga parpadear: 20 ms si el cursor dio un paso normal (misma fila, hasta 2 columnas) y 100 ms si "saltó" (otra fila o más
+de 2 columnas, la pinta de un redibujado que estaciona el cursor). La letra tipeada se ve al instante; el cuadrito recién
+cuando vence la retención, y cada tecla nueva durante la espera la reinicia. PSReadLine redibuja la línea en cada tecla,
+así que en una ráfaga el cursor queda clavado hasta 100 ms y después salta. Este build lo hace configurable:
+
+```toml
+[advanced]
+cursor_settle_ms = 0        # paso normal (default 20)
+cursor_jump_hold_ms = 40    # salto (default 100); 0 y 0 apagan la retención del todo
+```
+
+Con los defaults el exe se comporta igual que el oficial. Se lee al arrancar el servidor (`herdr server stop` y
+`agentnav up`; `reload-config` no alcanza). Con 0/0 vuelve el parpadeo del cursor que motivó el cambio de upstream en apps
+que estacionan el cursor durante un redibujado (Codex idle, barras de estado); 0/40 acota lo peor sin volver a eso. Para
+medir sin ojos: `HERDR_RENDER_PROF=1` en el entorno del servidor cuenta `pty.request_render_delayed` (renders agendados por
+la retención) contra `pty.request_render`.
 
 ## Árbol de carpetas
 

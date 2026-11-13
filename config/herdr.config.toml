@@ -82,3 +82,12 @@ enabled = true
 
 [session]
 resume_agents_on_restore = true
+
+[advanced]
+# 13/11: en Windows, Herdr retiene la posición del cursor antes de mostrarla (20 ms por paso, 100 ms por "salto")
+# para evitar un parpadeo de ConPTY; PSReadLine redibuja la línea en cada tecla, así que cada tecla cuenta como salto
+# y el cursor va atrás de lo que escribís (herdr-fork/cursor-lag.md). El build del fork (parche cursor-settle, desde
+# el agentnav-v0.9.5 del 13/11) hace configurables las dos ventanas; 0/40 deja Windows como macOS/Linux. El Herdr
+# oficial ignora estas claves. Se leen al arrancar el servidor (herdr server stop + agentnav up), no con reload-config.
+cursor_settle_ms = 0
+cursor_jump_hold_ms = 40

@@ -538,6 +538,18 @@ class Gemini(unittest.TestCase):
         c = {"name": "obra", "agent": "claude", "terminal_title_stripped": "Arreglo del build"}
         self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
 
+    def test_gemini_folder_trusted(self):
+        rules = {"c:/agentnav": "TRUST_FOLDER", "c:/obra/sub": "TRUST_PARENT", "c:/agentnav/secreto": "DO_NOT_TRUST"}
+        st = {}
+        self.assertTrue(an.gemini_folder_trusted("C:\\AgentNav", rules, st))
+        self.assertTrue(an.gemini_folder_trusted("C:\\AgentNav\\hooks\\", rules, st))     # subcarpeta de una confiada
+        self.assertTrue(an.gemini_folder_trusted("C:\\Obra\\otra", rules, st))             # TRUST_PARENT cubre al padre
+        self.assertFalse(an.gemini_folder_trusted("C:\\AgentNav\\secreto\\x", rules, st))  # la regla más larga manda
+        self.assertFalse(an.gemini_folder_trusted("C:\\PruebaGemini", rules, st))           # sin regla: va a preguntar
+        self.assertFalse(an.gemini_folder_trusted("C:\\AgentNavX", rules, st))              # prefijo engañoso no cuenta
+        self.assertIsNone(an.gemini_folder_trusted("C:\\x", rules, {"security": {"folderTrust": {"enabled": False}}}))
+        self.assertIsNone(an.gemini_folder_trusted("C:\\x", "basura", st))
+
     def test_gemini_auth_note(self):
         env = os.path.join(self.tmp.name, ".env")
         old = {k: os.environ.pop(k, None) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY")}

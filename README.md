@@ -150,6 +150,13 @@ corre ahí, porque dos Gemini sobre la misma sesión se pisan. Sin sesiones guar
 sin sesiones termina con error. Un Gemini de afuera se reconoce por su proceso `node …\@google\gemini-cli\bundle\gemini.js`
 y el id que lleve en `--resume`/`-r`/`--session-id`.
 
+**Primera apertura en una carpeta nueva:** Gemini pregunta "Trust folder / Trust parent / Don't trust" (como Claude Code
+tiene su propio diálogo de confianza); elegí **1, Trust folder**. Herdr da el agente por listo igual, y al responder
+Gemini se reinicia, así que lo primero que se le mande antes de eso se pierde. La respuesta queda en
+`%USERPROFILE%\.gemini\trustedFolders.json` y no se repite. `open` lo avisa en la consola cuando la carpeta todavía no
+está ahí ("Gemini espera que confíes la carpeta"); AgentNav no pre-registra confianza ni usa `--skip-trust` (si lo ponés
+vos en `args`, no avisa).
+
 `close` le manda `/quit` a cada Gemini en el prompt (a Claude, `/exit`). `recent` lista también las carpetas con sesiones
 de Gemini, con una columna que dice cuál agente las usó. `doctor` muestra un bloque "Gemini CLI" sólo cuando `gemini`
 está en el PATH o algún proyecto lo usa: versión instalada y si los seis hooks nuestros están en

@@ -60,6 +60,7 @@ GEMINI_HOME = os.environ.get("GEMINI_CLI_HOME") or os.path.join(USERPROFILE, ".g
 GEMINI_TMP = os.path.join(GEMINI_HOME, "tmp")  # <id del proyecto>\\chats\\session-<fecha>-<8 del sid>.jsonl
 GEMINI_REGISTRY = os.path.join(GEMINI_HOME, "projects.json")  # {"projects": {"<ruta en minúsculas>": "<id>"}}
 GEMINI_ENV = os.path.join(GEMINI_HOME, ".env")  # GEMINI_API_KEY=… cuando el login es por clave (selectedType gemini-api-key)
+GEMINI_TRUSTED = os.path.join(GEMINI_HOME, "trustedFolders.json")  # {"c:/obra": "TRUST_FOLDER" | "TRUST_PARENT" | "DO_NOT_TRUST"}
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentNav")
 JOURNAL_DIR = os.path.join(STATE_DIR, "journal")
 FOCUS_LOG = os.path.join(STATE_DIR, "focus.log")  # lo escribe plugin\focus.py en cada pane.focused: "<espacio> <panel>"
@@ -1017,6 +1018,9 @@ def _start_herdr_agent(a, path, pane, timeout_ms, say, used=None, others_live=Fa
             cli += ["--", *args]
         api(*cli, timeout=timeout_ms / 1000 + 10)
         pane_title(pane, a["name"])
+        if a["kind"] == "gemini" and "--skip-trust" not in args and gemini_folder_trusted(path) is False:
+            # Gemini pregunta por la carpeta la primera vez y se reinicia al responder: Herdr lo da por listo igual.
+            say(f"  {a['name']}: Gemini espera que confíes la carpeta: elegí 1 (Trust folder) en el panel; no se repite.")
         say(f"  {a['name']}: listo.")
         return True
     except AgentNavError as e:
@@ -2735,6 +2739,38 @@ def gemini_api_key_present(env_path=None):
     except OSError:
         pass
     return False
+
+
+def _gemini_trust_key(path):
+    """Cómo Gemini escribe las rutas en trustedFolders.json (normalizePath): real, minúsculas y con barras normales."""
+    return os.path.normpath(os.path.realpath(path)).replace("\\", "/").lower().rstrip("/")
+
+
+def gemini_folder_trusted(path, rules=None, settings=None):
+    """Si Gemini CLI va a arrancar en esa carpeta sin preguntar: True (confiada), False (va a mostrar el diálogo
+    "Trust folder / Trust parent / Don't trust"), None (no se sabe o el chequeo está apagado). Misma regla que
+    checkPathTrust: manda la regla más larga cuyo alcance (la carpeta, o su padre con TRUST_PARENT) contiene a path;
+    sin regla, no confiada. security.folderTrust.enabled = false en settings.json apaga el diálogo."""
+    try:
+        if settings is None:
+            settings = _read_json_file(os.path.join(GEMINI_HOME, "settings.json"), "settings.json de Gemini") or {}
+        if (((settings or {}).get("security") or {}).get("folderTrust") or {}).get("enabled") is False:
+            return None
+        if rules is None:
+            rules = _read_json_file(GEMINI_TRUSTED, "trustedFolders.json de Gemini") or {}
+    except AgentNavError:
+        return None
+    if not isinstance(rules, dict):
+        return None
+    want = _gemini_trust_key(path)
+    best_len, best = -1, None
+    for rule, level in rules.items():
+        scope = str(rule).replace("\\", "/").lower().rstrip("/")
+        if level == "TRUST_PARENT":
+            scope = scope.rsplit("/", 1)[0] if "/" in scope else scope
+        if (want == scope or want.startswith(scope + "/")) and len(str(rule)) > best_len:
+            best_len, best = len(str(rule)), level
+    return best in ("TRUST_FOLDER", "TRUST_PARENT")
 
 
 def gemini_auth_note(settings, env_path=None):

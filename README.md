@@ -280,7 +280,9 @@ directo) etiqueta a todos los agentes vivos al arrancar, y `agentnav labels` lo 
 
 ## Velocidad de la consola
 
-Si al tipear rápido el cursor parece ir atrás del texto, el shell no es la causa. Medido en un panel de Herdr con
+Si al tipear rápido el cursor parece ir atrás del texto, el shell no es lento; lo que pasa es que Herdr 0.9.5 (sólo
+en Windows) retiene la posición del cursor antes de dibujarla: 20 ms si dio un paso normal y 100 ms si "saltó" (otra
+fila o más de 2 columnas), y cada movimiento durante la espera reinicia la cuenta. Medido en un panel de Herdr con
 `pane send-text` (una ráfaga de 200 teclas en una sola escritura, mediana de 5): pwsh 7.6.9 con PSReadLine 2.4.5 y
 sus opciones de fábrica (predicción `HistoryAndPlugin`, vista en línea) tarda lo mismo con la predicción apagada, con
 vista en lista o con sólo historial, 77 ms en todos los casos contra 33 ms sin PSReadLine, y 33 ms es el piso de la
@@ -288,8 +290,11 @@ medición (una ida y vuelta de la CLI de Herdr). Son ~0,2 ms por tecla, muy por 
 Windows PowerShell 5.1 con PSReadLine 2.0.0 da los mismos números. El perfil que deja el instalador tiene sólo el alias
 `agentnav`: nada que corra por tecla (oh-my-posh, posh-git, Terminal-Icons sí lo hacen; si los tenés en tu perfil,
 probá sin ellos). Lo que sí importa es que Herdr abra el shell pedido: `doctor` avisa si `default_shell` dice `pwsh` y
-no está instalado (Herdr abre Windows PowerShell 5.1, más lento al arrancar) y muestra la versión de PSReadLine. Si
-querés apagar la predicción igual, es `Set-PSReadLineOption -PredictionSource None` en tu perfil; no lo pone AgentNav.
+no está instalado (Herdr abre Windows PowerShell 5.1, más lento al arrancar) y muestra la versión de PSReadLine. Y
+por la retención de Herdr sí conviene que el eco de cada tecla sea un trozo chico que deje el cursor una columna a la
+derecha: la predicción en línea escribe la sugerencia en gris adelante y vuelve, o sea un "salto" de 100 ms por tecla;
+`Set-PSReadLineOption -PredictionSource None` en tu perfil lo baja a los 20 ms del paso normal (AgentNav no lo pone).
+Un prompt de una línea que no reescriba la línea entera ayuda por lo mismo. El arreglo de fondo va en el Herdr propio.
 
 ## Requisitos
 

@@ -169,8 +169,11 @@ para Claude hace el hook de Herdr), BeforeAgent → `prompt`, AfterAgent → `st
 (ToolPermission) → `notify`, AfterTool → `& agentnav-unblock.cmd gemini` (Gemini corre los comandos en PowerShell; la
 puerta mira `GEMINI_SESSION_ID`). Estado, etiqueta del panel, diario y aviso ntfy
 funcionan igual que con Claude; el registro de Claude no cambia. Diferencias: Gemini no manda `idle_prompt`, así que
-un turno cortado con Esc queda "working" hasta el próximo evento; no resume la conversación en el título de la
-terminal, así que la etiqueta del panel lleva siempre el último pedido; y su `timeout` de hook se cuenta en
+un turno cortado con Esc queda "working" hasta el próximo evento; en el título de la terminal pone sólo su estado
+("◇ Ready (carpeta)", "✦ Working… (carpeta)"), así que la etiqueta del panel lleva el último pedido o, sin pedido, el
+nombre solo; el permiso llega como `ToolPermission` con `details.title` y `details.type` (`exec` = run_shell_command,
+`edit` = write_file o replace, sin nombre: lo desbloquea el AfterTool siguiente); `/clear` cambia el id de sesión;
+`/quit` manda SessionEnd dos veces (la segunda se ignora, marca `ended\<sid>`); y su `timeout` de hook se cuenta en
 milisegundos (10000).
 
 ## Herdr propio: los temas dentro de la pantalla de settings

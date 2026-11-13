@@ -15,7 +15,9 @@
 # En start, prompt, stop y notify también pone la etiqueta del panel ("<agente> · <tarea>", ver Pane-Label); SessionEnd la borra.
 #   end      SessionEnd       / SessionEnd   → release-agent         + limpia marcas (no en /clear: el panel sigue vivo)
 # Los dos agentes mandan el mismo JSON de base por stdin (session_id, cwd, prompt, reason, notification_type, message);
-# lo que difiere se resuelve adentro (ToolPermission trae la herramienta en details.tool_name).
+# lo que difiere se resuelve adentro: ToolPermission de Gemini trae details.type ("exec"|"edit") y details.title, no
+# el nombre de la herramienta; Gemini dispara SessionEnd dos veces en /quit (la repetición se ignora, marca "ended\<sid>");
+# /clear le cambia el id de sesión; y en --resume manda un transcript_path con la hora nueva (el archivo real es el viejo).
 # Siempre sale con 0 y nunca escribe en stdout: un hook que falla no debe molestar a Claude.
 # Archivo guardado como UTF-8 CON BOM: PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252 y rompe los acentos.
 # Usa API .NET en vez de cmdlets de proveedor (Test-Path, Get-ChildItem, Add-Content…): inicializar el proveedor
@@ -92,11 +94,13 @@ if (-not $projectName) { $projectName = $agentLabel }
 $stateDir = [IO.Path]::Combine($env:LOCALAPPDATA, "AgentNav")
 $workingDir = [IO.Path]::Combine($stateDir, "working")
 $blockedDir = [IO.Path]::Combine($stateDir, "blocked")
+$endedDir = [IO.Path]::Combine($stateDir, "ended")  # SessionEnd ya atendido: Gemini lo manda dos veces en /quit
 $journalDir = [IO.Path]::Combine($stateDir, "journal")
 $workingFile = [IO.Path]::Combine($workingDir, $sidFile)
 $blockedFile = [IO.Path]::Combine($blockedDir, $sidFile)
+$endedFile = [IO.Path]::Combine($endedDir, $sidFile)
 $blockedFlag = [IO.Path]::Combine($stateDir, "blocked.flag")
-try { foreach ($d in @($workingDir, $blockedDir, $journalDir)) { [IO.Directory]::CreateDirectory($d) | Out-Null } } catch { }
+try { foreach ($d in @($workingDir, $blockedDir, $endedDir, $journalDir)) { [IO.Directory]::CreateDirectory($d) | Out-Null } } catch { }
 
 function Read-Marker([string]$path) {
     try { if ([IO.File]::Exists($path)) { return [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) } } catch { }
@@ -152,7 +156,7 @@ function Prune-Markers([int]$hours = 12) {
     # Sesiones que murieron sin SessionEnd (panel cerrado, proceso matado) dejan marcas; se podan en cada evento, ~1 ms.
     try {
         $limit = [DateTime]::Now.AddHours(-$hours)
-        foreach ($d in @($workingDir, $blockedDir)) {
+        foreach ($d in @($workingDir, $blockedDir, $endedDir)) {
             foreach ($f in [IO.Directory]::GetFiles($d)) {
                 if ([IO.File]::GetLastWriteTime($f) -lt $limit) { [IO.File]::Delete($f) }
             }
@@ -254,7 +258,8 @@ function Pane-Label([string]$hint) {
         $name = [string]$me.name
         if (-not $name) { $name = [string]$me.agent }
         $task = [string]$me.terminal_title_stripped
-        if (-not $task -or $task -in @("Claude Code", "Gemini", "Gemini CLI") -or ($AgentKind -ne "claude" -and $hint)) { $task = $hint }
+        # Gemini sólo pone su estado en el título ("◇ Ready (carpeta)", "✦ Working… (carpeta)"): no es una tarea.
+        if ($AgentKind -ne "claude" -or -not $task -or $task -eq "Claude Code") { $task = $hint }
         # El borde se ve en cualquier captura: un pedido que traiga algo con pinta de clave no va.
         if ($task -match '(?i)(gh[pousr]_[A-Za-z0-9]|sk-[A-Za-z0-9_-]{8}|xox[abp]-|AKIA[0-9A-Z]{8}|bearer\s+\S{8}|eyJ[A-Za-z0-9_-]{10,}|[A-Fa-f0-9]{32,}|-----BEGIN|authorization\s*:|(password|passwd|contrase.a|token|secret|api[_-]?key)\s*[=:])') { $task = "" }
         $task = Clean-Message $task 60
@@ -277,6 +282,7 @@ switch ($Action) {
         # Sesión nueva, retomada o /clear (payload.source): el agente está en el prompt, sin nada pendiente.
         $state = "idle"
         Remove-Marker $workingFile
+        Remove-Marker $endedFile  # --resume trae el mismo sid que la sesión cerrada
         # Una sesión matada estando blocked y retomada con --resume trae el mismo sid: la bandera global también se actualiza.
         if ([IO.File]::Exists($blockedFile)) { Remove-Marker $blockedFile; $syncFlag = $true }
         Journal "start" ([string]$payload.source)
@@ -315,11 +321,20 @@ switch ($Action) {
         if ($ntype -in @("permission_prompt", "ToolPermission")) {  # Claude Code / Gemini CLI
             $state = "blocked"
             $raw = [string]$payload.message
-            $m = Clean-Message $raw 70
+            # Gemini: details.title ("Confirm Write: saludo.txt", "Confirm Shell Command") dice más que el message
+            # ("Tool Confirm Write: saludo.txt requires editing"); details.type "exec" es run_shell_command, "edit" puede
+            # ser write_file o replace (sin nombre: el próximo AfterTool desbloquea). Claude: la herramienta va en el texto.
+            $tool = ""; $title = ""
+            try {
+                $d = $payload.details
+                if ($d) {
+                    if ($d.tool_name) { $tool = [string]$d.tool_name }
+                    elseif ([string]$d.type -eq "exec") { $tool = "run_shell_command" }
+                    if ($d.title) { $title = [string]$d.title }
+                }
+            } catch { }
+            $m = Clean-Message $(if ($title) { $title } else { $raw }) 70
             $message = if ($m) { "pide permiso: $m" } else { "pide permiso" }
-            # Gemini trae la herramienta en details.tool_name; Claude sólo en el texto ("… permission to use Bash").
-            $tool = ""
-            try { if ($payload.details -and $payload.details.tool_name) { $tool = [string]$payload.details.tool_name } } catch { }
             if (-not $tool -and $raw -match 'to use (\S+)') { $tool = $Matches[1] }
             Write-Marker $blockedFile ("tool=$tool`n$message")
             Journal "blocked" $message
@@ -330,10 +345,14 @@ switch ($Action) {
         } else { exit 0 }
     }
     "end" {
-        $release = ([string]$payload.reason) -ne "clear"  # /clear reinicia la sesión en el mismo panel vivo
+        $reason = [string]$payload.reason
+        # Gemini manda SessionEnd dos veces en /quit: la segunda, misma sesión y motivo en los últimos 10 s, no hace nada.
+        if ((Read-Marker $endedFile) -eq "reason=$reason" -and (Elapsed-Seconds $endedFile) -lt 10) { exit 0 }
+        Write-Marker $endedFile "reason=$reason"
+        $release = $reason -ne "clear"  # /clear reinicia la sesión en el mismo panel vivo (Gemini además cambia el id)
         Remove-Marker $workingFile
         Remove-Marker $blockedFile
-        Journal "end" ([string]$payload.reason)
+        Journal "end" $reason
     }
 }
 if ($syncFlag -or $Action -notin @("prompt", "start")) { Sync-BlockedFlag }
@@ -355,6 +374,10 @@ try {
             # Id de sesión (y transcript) del agente, como hace el hook de Herdr para Claude: así `agent list` lo trae.
             $cli += @("--agent-session-id", $sid)
             $tp = [string]$payload.transcript_path
+            if ($tp -and [string]$payload.source -eq "resume" -and -not [IO.File]::Exists($tp)) {
+                # Gemini en --resume manda la ruta con la hora nueva; el archivo real es session-<fecha vieja>-<8 del sid>.
+                try { $tp = [string]([IO.Directory]::GetFiles([IO.Path]::GetDirectoryName($tp), "session-*-$sidShort.jsonl") | Select-Object -First 1) } catch { $tp = "" }
+            }
             if ($tp) { $cli += @("--agent-session-path", $tp) }
             # Y el comando que reanuda esa sesión si Herdr se reinicia (gemini --resume <id>; Claude lo tiene de fábrica).
             if ($AgentKind -eq "gemini") { $cli += @("--", "gemini", "--resume", $sid) }

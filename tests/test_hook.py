@@ -97,6 +97,14 @@ class HookDeEstado(unittest.TestCase):
     def _flag(self):
         return os.path.exists(os.path.join(self.state, "blocked.flag"))
 
+    def _journal(self):
+        d = os.path.join(self.state, "journal")
+        out = []
+        for n in os.listdir(d):
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                out.append(f.read())
+        return "".join(out)
+
     def _report(self, calls, state):
         """La llamada report-agent de `calls`, sin el --seq (varía)."""
         r = [c for c in calls if c[:2] == ["pane", "report-agent"]]
@@ -116,23 +124,24 @@ class HookDeEstado(unittest.TestCase):
     def test_vida_de_una_sesion_gemini(self):
         sid = "sid-g1"
         base = {"session_id": sid, "cwd": r"C:\proj\demo", "transcript_path": r"C:\proj\t.json", "timestamp": "2026-11-13T10:00:00Z"}
-        # SessionStart: idle + id de sesión; sin pedido todavía, la etiqueta cae al título de la terminal
+        # SessionStart: idle + id de sesión; sin pedido todavía, sólo el nombre (el título de Gemini es su estado)
         calls = self._run("start", "gemini", dict(base, hook_event_name="SessionStart", source="startup"))
         self.assertEqual(self._report(calls, "idle"), ["--agent-session-id", sid, "--agent-session-path", r"C:\proj\t.json",
                                                        "--", "gemini", "--resume", sid])
         self.assertIn(["agent", "list"], calls)
-        self.assertEqual(self._title(calls), ["--title", "gem-1 · ✦ demo"])
+        self.assertEqual(self._title(calls), ["--title", "gem-1"])
         # BeforeAgent: working con el pedido; la etiqueta lleva el pedido aunque el título de terminal diga otra cosa
         calls = self._run("prompt", "gemini", dict(base, hook_event_name="BeforeAgent", prompt="arreglá el login\ncon ñ"))
         self.assertEqual(self._report(calls, "working"), ["--message=arreglá el login con ñ"])
         self.assertEqual(self._title(calls), ["--title", "gem-1 · arreglá el login con ñ"])
         self.assertEqual(self._marker("working", sid), "arreglá el login con ñ")
         self.assertFalse(self._flag())
-        # Notification ToolPermission: blocked, con la herramienta de details.tool_name
+        # Notification ToolPermission (payload real de 0.68): texto de details.title, herramienta por details.type
         calls = self._run("notify", "gemini", dict(base, hook_event_name="Notification", notification_type="ToolPermission",
-                                                   message="Gemini wants to run a command", details={"tool_name": "run_shell_command"}))
-        self.assertEqual(self._report(calls, "blocked"), ["--message=pide permiso: Gemini wants to run a command"])
-        self.assertEqual(self._marker("blocked", sid), "tool=run_shell_command\npide permiso: Gemini wants to run a command")
+                                                   message="Tool Confirm Shell Command requires execution",
+                                                   details={"type": "exec", "title": "Confirm Shell Command", "command": "clear"}))
+        self.assertEqual(self._report(calls, "blocked"), ["--message=pide permiso: Confirm Shell Command"])
+        self.assertEqual(self._marker("blocked", sid), "tool=run_shell_command\npide permiso: Confirm Shell Command")
         self.assertTrue(self._flag())
         # AfterTool de otra herramienta: no desbloquea
         calls = self._run("", "gemini", dict(base, hook_event_name="AfterTool", tool_name="write_file"),
@@ -149,19 +158,18 @@ class HookDeEstado(unittest.TestCase):
         calls = self._run("stop", "gemini", dict(base, hook_event_name="AfterAgent", prompt="x", prompt_response="y", stop_hook_active=False))
         self.assertEqual(self._report(calls, "idle"), [])
         self.assertIsNone(self._marker("working", sid))
-        # SessionEnd por /clear: el panel sigue vivo, no se libera; por salida: release + se borra la etiqueta
-        calls = self._run("end", "gemini", dict(base, hook_event_name="SessionEnd", reason="clear"))
-        self.assertEqual(calls, [])
+        # SessionEnd por /quit (reason exit): release + se borra la etiqueta; Gemini lo manda dos veces, la segunda no hace nada
         calls = self._run("end", "gemini", dict(base, hook_event_name="SessionEnd", reason="exit"))
         self.assertEqual([c[:7] for c in calls], [["pane", "release-agent", PANE, "--source", "agentnav", "--agent", "gemini"],
                                                    ["pane", "report-metadata", PANE, "--source", "agentnav", "--clear-title"]])
+        calls = self._run("end", "gemini", dict(base, hook_event_name="SessionEnd", reason="exit"))
+        self.assertEqual(calls, [])
         # diario y traza
-        journal_dir = os.path.join(self.state, "journal")
-        text = "".join(open(os.path.join(journal_dir, n), encoding="utf-8").read() for n in os.listdir(journal_dir))
+        text = self._journal()
         self.assertIn("\tstart\tstartup", text)
         self.assertIn("\tprompt\tarreglá el login con ñ", text)
         self.assertIn("\tblocked\tpide permiso", text)
-        self.assertIn("\tend\texit", text)
+        self.assertEqual(text.count("\tend\texit"), 1)
         with open(os.path.join(self.state, "hook.log"), encoding="utf-8") as f:
             log = f.read()
         self.assertIn("action=prompt/gemini state=working", log)
@@ -178,6 +186,52 @@ class HookDeEstado(unittest.TestCase):
         # un segundo argumento que no es un tipo de agente no hace nada
         self.assertEqual(self._run("prompt", "Gem ini", base), [])
         self.assertIsNone(self._marker("working", "sid-c1"))
+
+    def test_clear_cambia_de_sesion_sin_liberar_el_panel(self):
+        """/clear en Gemini: SessionEnd "clear" con el sid viejo (limpia marcas, no libera) y SessionStart "clear" con uno nuevo."""
+        old, new = "sid-g3", "sid-g4"
+        self._run("prompt", "gemini", {"session_id": old, "cwd": r"C:\proj\demo", "hook_event_name": "BeforeAgent", "prompt": "algo"})
+        self.assertIsNotNone(self._marker("working", old))
+        calls = self._run("end", "gemini", {"session_id": old, "cwd": r"C:\proj\demo", "hook_event_name": "SessionEnd", "reason": "clear"})
+        self.assertEqual(calls, [])
+        self.assertIsNone(self._marker("working", old))
+        calls = self._run("start", "gemini", {"session_id": new, "cwd": r"C:\proj\demo", "hook_event_name": "SessionStart", "source": "clear",
+                                              "transcript_path": r"C:\proj\chats\session-2026-11-13T19-17-sid-g4.jsonl"})
+        self.assertEqual(self._report(calls, "idle")[:2], ["--agent-session-id", new])
+        text = self._journal()
+        self.assertIn(f"\t{old}\tend\tclear", text)
+        self.assertIn(f"\t{new}\tstart\tclear", text)
+
+    def test_resume_usa_el_transcript_real(self):
+        """En --resume Gemini manda transcript_path con la hora nueva; el archivo real es el viejo con los 8 del sid."""
+        sid = "38cc738d-f065-43f5-aa87-fb20a1389402"
+        with tempfile.TemporaryDirectory() as chats:
+            real = os.path.join(chats, "session-2026-11-13T19-13-38cc738d.jsonl")
+            open(real, "w").close()
+            fake = os.path.join(chats, "session-2026-11-13T19-17-38cc738d.jsonl")
+            calls = self._run("start", "gemini", {"session_id": sid, "cwd": r"C:\proj\demo", "hook_event_name": "SessionStart",
+                                                  "source": "resume", "transcript_path": fake})
+            self.assertEqual(self._report(calls, "idle")[:4], ["--agent-session-id", sid, "--agent-session-path", real])
+            # sesión nueva: el archivo todavía no existe y la ruta va tal cual
+            calls = self._run("start", "gemini", {"session_id": "sid-g5", "cwd": r"C:\proj\demo", "hook_event_name": "SessionStart",
+                                                  "source": "startup", "transcript_path": os.path.join(chats, "session-x-sid-g5.jsonl")})
+            self.assertEqual(self._report(calls, "idle")[2], "--agent-session-path")
+        text = self._journal()
+        self.assertIn("\t38cc738d\tstart\tresume", text)
+
+    def test_permiso_de_edicion_sin_herramienta_se_desbloquea_con_cualquier_aftertool(self):
+        sid = "sid-g6"
+        base = {"session_id": sid, "cwd": r"C:\proj\demo"}
+        self._run("prompt", "gemini", dict(base, hook_event_name="BeforeAgent", prompt="escribí saludo.txt"))
+        calls = self._run("notify", "gemini", dict(base, hook_event_name="Notification", notification_type="ToolPermission",
+                                                   message="Tool Confirm Write: saludo.txt requires editing",
+                                                   details={"type": "edit", "title": "Confirm Write: saludo.txt", "fileName": "saludo.txt"}))
+        self.assertEqual(self._report(calls, "blocked"), ["--message=pide permiso: Confirm Write: saludo.txt"])
+        self.assertEqual(self._marker("blocked", sid), "tool=\npide permiso: Confirm Write: saludo.txt")
+        calls = self._run("", "gemini", dict(base, hook_event_name="AfterTool", tool_name="write_file"),
+                          env={"GEMINI_SESSION_ID": sid}, via_cmd=True)
+        self.assertEqual(self._report(calls, "working"), ["--message=escribí saludo.txt"])
+        self._run("stop", "gemini", dict(base, hook_event_name="AfterAgent"))
 
     def test_resume_sobre_sesion_bloqueada_limpia_la_bandera(self):
         """Gemini matado con un permiso abierto y retomado con --resume (mismo sid): start borra la marca y la bandera."""

@@ -167,6 +167,19 @@ y `agentnav doctor`. Volver a correrlo actualiza sin perder `settings.json` ni `
 
 Mandalo por WhatsApp, Drive o un pendrive: Gmail rechaza zips con `.cmd` adentro.
 
+## Gemini CLI
+
+### Instalar Gemini
+
+El instalador no trae Gemini CLI salvo que se lo pidas: `install.ps1 -ConGemini` (apagado por defecto). Con eso agrega
+dos requisitos, **Node.js LTS** (winget `OpenJS.NodeJS.LTS`; sin winget, el `.msi` x64 de la última LTS según
+`nodejs.org/dist/index.json`) y **Gemini CLI** (`npm install -g @google/gemini-cli`, que deja `gemini.cmd` en
+`%APPDATA%\npm`), y en el paso de hooks corre `configurar.py gemini-hooks` para registrar `agentnav-state.ps1` en
+`%USERPROFILE%\.gemini\settings.json` sin tocar lo demás que haya ahí (Antigravity guarda lo suyo en esa carpeta), con
+backup. Herdr 0.9.5 no tiene `herdr integration install gemini`, así que no hay hook propio de Herdr para Gemini. Con
+`-SinRequisitos -ConGemini` sólo registra los hooks y avisa si falta `gemini`. La primera vez que corre, Gemini pide
+iniciar sesión con una cuenta de Google.
+
 ## Etiqueta de cada panel
 
 Arriba de cada panel con agente, en el borde, Herdr muestra `<agente> · <tarea>`: el nombre que le dio Herdr al agente

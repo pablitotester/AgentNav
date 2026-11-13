@@ -39,5 +39,9 @@ Opciones (en una PowerShell, desde la carpeta del zip)
 ------------------------------------------------------
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -HerdrOficial    Herdr de herdr.dev, sin los temas compilados
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -SinRequisitos   no instala nada que falte, sólo configura
+  powershell -ExecutionPolicy Bypass -File .\install.ps1 -ConGemini       además Node.js LTS y Gemini CLI (npm), y registra
+                                                                          los hooks de AgentNav en %USERPROFILE%\.gemini\settings.json
+                                                                          (sin pisar lo que ya haya). La primera vez Gemini
+                                                                          pide iniciar sesión con tu cuenta de Google.
 Si hay git y acceso a github.com/pablitotester/AgentNav, C:\AgentNav queda como clon y se actualiza con agentnav update;
 si no, con la copia del zip. Volver a correr el instalador actualiza sin perder settings.json ni projects.json.

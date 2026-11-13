@@ -116,7 +116,7 @@ function NodeJs-LatestLtsMsi {
     # nodejs.org/dist/index.json lista todas las versiones; "lts" es false o el nombre de la línea LTS. La primera con
     # nombre es la LTS más nueva. Instalador x64 .msi: node-vX.Y.Z-x64.msi.
     $idx = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -UseBasicParsing -Headers @{ "User-Agent" = "AgentNav-install" }
-    $lts = $idx | Where-Object { $_.lts -and $_.lts -ne $false -and "$($_.lts)" -ne "False" } | Select-Object -First 1
+    $lts = $idx | Where-Object { $_.lts } | Select-Object -First 1
     if ($null -eq $lts) { throw "no encontré una versión LTS en nodejs.org/dist/index.json" }
     return "https://nodejs.org/dist/$($lts.version)/node-$($lts.version)-x64.msi"
 }
@@ -218,7 +218,7 @@ if (-not $SinRequisitos) {
 } else {
     if (-not (Test-Python)) { throw "falta Python 3.11+ de 64 bits con py" }
     if (-not (Have "herdr")) { throw "falta Herdr" }
-    if ($ConGemini -and -not (Have "gemini")) { Aviso "-ConGemini con -SinRequisitos: falta Gemini CLI (npm install -g @google/gemini-cli); registro los hooks igual" }
+    if ($ConGemini -and -not (Have "gemini")) { Write-Host "    -ConGemini con -SinRequisitos: falta Gemini CLI; registro los hooks igual" }
 }
 
 # ------------------------------------------------------------------------------------------------ 2. archivos
@@ -322,14 +322,17 @@ try {
 # ------------------------------------------------------------------------------------------------ 3b. hooks de Gemini CLI
 if ($ConGemini) {
     Step "Hooks de Gemini CLI"
-    # El mismo agentnav-state.ps1 (ya copiado a $HooksDir) atiende a Gemini con sus eventos (SessionStart, BeforeAgent,
-    # AfterAgent, SessionEnd, Notification). configurar.py gemini-hooks los registra en el settings.json de Gemini
-    # sin tocar lo demás (Antigravity guarda lo suyo ahí), con backup. Herdr 0.9.5 no tiene `integration install gemini`.
+    # Los mismos agentnav-state.ps1 y agentnav-unblock.cmd (ya copiados a $HooksDir) atienden a Gemini con sus seis
+    # eventos (SessionStart, BeforeAgent, AfterAgent, SessionEnd, Notification y AfterTool, el desbloqueo tras un permiso).
+    # configurar.py gemini-hooks los registra en el settings.json de Gemini sin tocar lo demás (Antigravity guarda lo
+    # suyo ahí), con backup. Gemini corre los comandos de hook en PowerShell. Herdr 0.9.5 no tiene `integration install gemini`.
     New-Item -ItemType Directory -Force -Path $GeminiHome | Out-Null
     & py -3 -I -X utf8 $configurar gemini-hooks (Join-Path $GeminiHome "settings.json") $HooksDir | Out-Host
     if ($LASTEXITCODE -ne 0) { Aviso "no pude registrar los hooks en el settings.json de Gemini CLI" }
     if (Have "gemini") {
         Write-Host "    la primera vez, `gemini` pide iniciar sesión con tu cuenta de Google"
+    } else {
+        Aviso "los hooks de Gemini quedaron registrados, pero falta el comando gemini: npm install -g @google/gemini-cli"
     }
 }
 

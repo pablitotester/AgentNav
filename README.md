@@ -216,6 +216,13 @@ marcador. No instala AgentNav: para eso está el paquete de abajo.
 
 Copias de referencia del parche, el workflow y el instalador: `herdr-fork\` en este repo.
 
+**Cursor que va atrás de las teclas (Windows):** no es `host_cursor`. Herdr retiene la posición del cursor 20 ms por
+paso y 100 ms por "salto" antes de mostrarla, sólo en Windows (desde 0.9.2, para que ConPTY no lo haga parpadear), y
+PSReadLine redibuja la línea en cada tecla, así que en una ráfaga el cuadrito se queda clavado hasta 100 ms y después
+salta. La letra sí aparece al instante. Análisis con referencias al fuente, la prueba en vivo con `host_cursor = "native"`
+(recarga en caliente, cambia cómo se ve el cursor, no cuánto tarda) y un parche para el fork que lo hace configurable
+(`[advanced] cursor_settle_ms` / `cursor_jump_hold_ms`, sin aplicar): `herdr-fork\cursor-lag.md` y `herdr-fork\cursor-settle.patch`.
+
 ## Instalar en otra PC (paquete para un amigo)
 
 `installer\build.ps1` arma `dist\AgentNav-setup.zip` (~90 KB): una copia del repo sin `settings.json` (trae tu topic de

@@ -60,6 +60,12 @@ status_indicators = "symbols"
 prompt_new_tab_name = false
 # Título de la pestaña de Windows Terminal
 window_title = "{workspace} · {pane}"
+# Cursor del panel. "auto" (= "drawn" en Windows): Herdr pinta su propio cuadrito como celda y esconde el cursor
+# de Windows Terminal, para que ConPTY no lo haga parpadear mientras se escribe el frame. "native": el cursor de
+# Windows Terminal (parpadea, se mueve en el mismo frame). Ninguno de los dos cambia cuánto tarda el cursor en
+# seguir al tipeo: eso lo decide una retención de 20/100 ms del servidor, sólo en Windows (herdr-fork\cursor-lag.md).
+# Cambiarlo recarga el cliente en caliente (herdr server reload-config), sin cerrar sesiones.
+# host_cursor = "auto"
 
 [ui.sidebar.agents]
 # Claude: segunda línea = el título que Claude escribe (resumen de lo que hace)

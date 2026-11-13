@@ -185,9 +185,10 @@ directo) etiqueta a todos los agentes vivos al arrancar, y `agentnav labels` lo 
 El mismo `agentnav-state.ps1` atiende a Gemini CLI: se registra en `%USERPROFILE%\.gemini\settings.json` con el
 segundo argumento `gemini` (`configurar.py gemini-hooks <settings.json de Gemini> <carpeta de hooks>`, que respeta
 lo que ya haya en ese archivo, por ejemplo los `mcpServers` de Antigravity, y deja un `.bak-agentnav-<fecha>`).
-Eventos: SessionStart → `start` (idle + id de sesión, lo que para Claude hace el hook de Herdr), BeforeAgent →
-`prompt`, AfterAgent → `stop`, SessionEnd → `end`, Notification (ToolPermission) → `notify`, AfterTool →
-`agentnav-unblock.cmd gemini` (la puerta mira `GEMINI_SESSION_ID`). Estado, etiqueta del panel, diario y aviso ntfy
+Eventos: SessionStart → `start` (idle + id de sesión y `gemini --resume <id>` como comando de reanudación, lo que
+para Claude hace el hook de Herdr), BeforeAgent → `prompt`, AfterAgent → `stop`, SessionEnd → `end`, Notification
+(ToolPermission) → `notify`, AfterTool → `& agentnav-unblock.cmd gemini` (Gemini corre los comandos en PowerShell; la
+puerta mira `GEMINI_SESSION_ID`). Estado, etiqueta del panel, diario y aviso ntfy
 funcionan igual que con Claude; el registro de Claude no cambia. Diferencias: Gemini no manda `idle_prompt`, así que
 un turno cortado con Esc queda "working" hasta el próximo evento; no resume la conversación en el título de la
 terminal, así que la etiqueta del panel lleva siempre el último pedido; y su `timeout` de hook se cuenta en

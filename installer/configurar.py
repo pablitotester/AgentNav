@@ -45,7 +45,9 @@ def hook_command(hooks_dir, script, arg, kind=""):
     tail = " ".join(x for x in (arg, kind) if x)
     if script.endswith(".ps1"):
         return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}" {tail}'.rstrip()
-    return f'"{path}" {tail}'.rstrip()
+    if kind:  # Gemini corre el comando en PowerShell (pwsh -NoProfile -Command): una ruta entre comillas se invoca con &
+        return f'& "{path}" {tail}'
+    return f'"{path}"'
 
 
 def _registered(blocks, needle):

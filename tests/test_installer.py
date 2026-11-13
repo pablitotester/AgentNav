@@ -87,7 +87,7 @@ class HooksDeGemini(unittest.TestCase):
         self.assertEqual(_commands(new, "BeforeAgent"),
                          [f'powershell -NoProfile -ExecutionPolicy Bypass -File "{HOOKS}\\agentnav-state.ps1" prompt gemini'])
         self.assertEqual(_commands(new, "SessionStart")[0].split('" ')[1], "start gemini")
-        self.assertEqual(_commands(new, "AfterTool"), [f'"{HOOKS}\\agentnav-unblock.cmd" gemini'])
+        self.assertEqual(_commands(new, "AfterTool"), [f'& "{HOOKS}\\agentnav-unblock.cmd" gemini'])  # corre en pwsh -Command
         for ev in self.EVENTS:
             self.assertNotIn("matcher", new["hooks"][ev][0], ev)  # ciclo de vida: matcher exacto, queremos todos
             h = new["hooks"][ev][0]["hooks"][0]

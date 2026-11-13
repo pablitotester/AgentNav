@@ -118,7 +118,8 @@ class HookDeEstado(unittest.TestCase):
         base = {"session_id": sid, "cwd": r"C:\proj\demo", "transcript_path": r"C:\proj\t.json", "timestamp": "2026-11-13T10:00:00Z"}
         # SessionStart: idle + id de sesión; sin pedido todavía, la etiqueta cae al título de la terminal
         calls = self._run("start", "gemini", dict(base, hook_event_name="SessionStart", source="startup"))
-        self.assertEqual(self._report(calls, "idle"), ["--agent-session-id", sid, "--agent-session-path", r"C:\proj\t.json"])
+        self.assertEqual(self._report(calls, "idle"), ["--agent-session-id", sid, "--agent-session-path", r"C:\proj\t.json",
+                                                       "--", "gemini", "--resume", sid])
         self.assertIn(["agent", "list"], calls)
         self.assertEqual(self._title(calls), ["--title", "gem-1 · ✦ demo"])
         # BeforeAgent: working con el pedido; la etiqueta lleva el pedido aunque el título de terminal diga otra cosa

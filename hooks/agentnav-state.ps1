@@ -355,6 +355,8 @@ try {
             $cli += @("--agent-session-id", $sid)
             $tp = [string]$payload.transcript_path
             if ($tp) { $cli += @("--agent-session-path", $tp) }
+            # Y el comando que reanuda esa sesión si Herdr se reinicia (gemini --resume <id>; Claude lo tiene de fábrica).
+            if ($AgentKind -eq "gemini") { $cli += @("--", "gemini", "--resume", $sid) }
         }
         $result = Report-Herdr $cli
         # La etiqueta va después del estado, no en unblock (corre por cada herramienta) y no si Herdr acaba de colgarse

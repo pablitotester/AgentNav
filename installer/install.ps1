@@ -17,7 +17,8 @@ Qué hace, en orden (cada paso se saltea si ya está):
  3. Hooks de Claude Code en %USERPROFILE%\.claude\hooks y su registro en settings.json de Claude (sin tocar lo demás).
     `herdr integration install claude` para el hook propio de Herdr (SessionStart).
  4. config.toml de Herdr (con backup del que hubiera), plugin de Herdr enlazado, arranque automático del servidor,
-    alias `agentnav` en los dos perfiles de PowerShell, acceso directo "Herdr" en el escritorio.
+    alias `agentnav` en los dos perfiles de PowerShell, acceso directo "Herdr" en el escritorio, y la tarea programada
+    "AgentNav update" (auto-update: cada hora trae lo nuevo de AgentNav y del Herdr del fork; `agentnav update --task`).
  5. Levanta el servidor y corre `agentnav doctor`.
 No necesita administrador: todo se instala para el usuario actual.
 #>
@@ -194,7 +195,8 @@ if (-not $SinRequisitos) {
         if ($HerdrOficial) {
             Invoke-RemoteScript "https://herdr.dev/install.ps1" @()
         } else {
-            Invoke-RemoteScript "https://raw.githubusercontent.com/$ForkRepo/agentnav/agentnav/install.ps1" @("-Repo", $ForkRepo)
+            # -NoAutoUpdate: la tarea de updates la pone AgentNav (paso 4, "AgentNav update": AgentNav y Herdr juntos).
+            Invoke-RemoteScript "https://raw.githubusercontent.com/$ForkRepo/agentnav/agentnav/install.ps1" @("-Repo", $ForkRepo, "-NoAutoUpdate")
         }
     }
 
@@ -394,6 +396,14 @@ try {
     $lnk.Save()
     Ok "acceso directo Herdr en el escritorio"
 } catch { Aviso "no pude crear el acceso directo: $($_.Exception.Message)" }
+
+Step "Auto-update"
+try {
+    # Tarea programada "AgentNav update" (cada hora y al iniciar sesión, sin ventana): git pull --ff-only de AgentNav si
+    # el árbol está limpio + re-copia de hooks y config + Herdr del fork cuando hay build nuevo y nadie trabaja.
+    & py -3 -I -X utf8 (Join-Path $Dest "agentnav.py") update --install-task | Out-Host
+    Ok "tarea 'AgentNav update' registrada (log: %LOCALAPPDATA%\AgentNav\update.log)"
+} catch { Aviso "no pude registrar la tarea de auto-update: $($_.Exception.Message). A mano: agentnav update --install-task" }
 
 # ------------------------------------------------------------------------------------------------ 5. doctor
 Step "agentnav doctor"

@@ -101,3 +101,46 @@ class ConfigConTema(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoUpdate(unittest.TestCase):
+    def test_update_task_xml(self):
+        import xml.etree.ElementTree as ET
+        xml = an.update_task_xml(r"C:\Py\pythonw.exe", r"C:\AgentNav\agentnav.py", user="PC\\pablo", start="2026-11-16T12:00:00")
+        root = ET.fromstring(xml.encode("utf-16"))  # el encabezado declara UTF-16: schtasks /XML lo lee así
+        ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+        self.assertEqual(root.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", ns).text, "PT1H")
+        self.assertEqual(root.find("t:Triggers/t:TimeTrigger/t:StartBoundary", ns).text, "2026-11-16T12:00:00")
+        self.assertEqual(root.find("t:Triggers/t:LogonTrigger/t:UserId", ns).text, "PC\\pablo")
+        self.assertEqual(root.find("t:Actions/t:Exec/t:Command", ns).text, r"C:\Py\pythonw.exe")
+        self.assertEqual(root.find("t:Actions/t:Exec/t:Arguments", ns).text, r'-I "C:\AgentNav\agentnav.py" update --task')
+        self.assertEqual(root.find("t:Settings/t:MultipleInstancesPolicy", ns).text, "IgnoreNew")
+        self.assertEqual(root.find("t:Settings/t:StartWhenAvailable", ns).text, "true")
+        self.assertEqual(root.find("t:Principals/t:Principal/t:LogonType", ns).text, "InteractiveToken")
+
+    def test_update_task_xml_sin_usuario(self):
+        xml = an.update_task_xml("pythonw.exe", "agentnav.py", user="")
+        self.assertNotIn("<UserId>", xml)
+
+    def test_file_logger(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sub", "update.log")
+            seen = []
+            say = an._file_logger(path, inner=seen.append)
+            say("hola")
+            say("mundo")
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[0], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}  hola$")
+        self.assertEqual(seen, lines)  # lo mismo va por stdout (o a donde diga inner)
+
+    def test_file_logger_rota(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "update.log")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("x" * (256 * 1024 + 1))
+            an._file_logger(path, inner=lambda _: None)("nuevo")
+            self.assertTrue(os.path.isfile(path + ".old"))
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(len(f.read().splitlines()), 1)

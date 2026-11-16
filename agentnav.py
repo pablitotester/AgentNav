@@ -22,7 +22,10 @@ Uso:
   agentnav doctor          verifica la instalación completa (Herdr, hooks, config, shell, arranque) y si origin tiene commits nuevos
   agentnav update [--check]
                            trae lo nuevo de origin (git pull --ff-only) y re-copia hooks, arranque y config de Herdr
-                           a su lugar (config con respaldo). --check sólo avisa: sale 0 al día, 10 si hay commits nuevos
+                           a su lugar (config con respaldo). --check sólo avisa: sale 0 al día, 10 si hay commits nuevos.
+                           --install-task registra la tarea programada "AgentNav update" (cada hora y al iniciar sesión),
+                           que corre `update --task`: lo mismo sin ventana y sólo con el árbol limpio, más
+                           `herdr-sync --task`. Es el auto-update: lo deja el instalador en cada PC
   agentnav theme [nombre]  tema de colores de Herdr. Sin nombre: selector con flechas (es lo que corre el popup
                            ctrl+b alt+t; `theme list` sólo imprime). Con nombre lo aplica y recarga al instante.
                            Paletas propias en config\\themes.json: cs16, matrix, procomm; más los temas de Herdr
@@ -1510,7 +1513,7 @@ def update_notice(st):
         return None
     n = st["behind"]
     title = f"AgentNav: {n} commit{'s' if n != 1 else ''} nuevo{'s' if n != 1 else ''} en {st['upstream']}"
-    body = "agentnav update los instala (git pull y re-copia hooks, arranque y config de Herdr)"
+    body = f"la tarea '{UPDATE_TASK}' los instala en la próxima hora (o ya: agentnav update)"
     if st.get("dirty"):
         body = f"hay cambios locales sin commitear en {HOME}; commiteá o descartá y después agentnav update"
     elif st.get("ahead"):
@@ -2286,12 +2289,12 @@ def cmd_herdr_sync(argv, say=print):
 
 
 def _task_log_path():
-    return os.path.join(USERPROFILE or HOME, ".herdr", "agentnav", "update.log")
+    """Log de las tareas programadas (`update --task` y `herdr-sync --task`)."""
+    return os.path.join(STATE_DIR, "update.log")
 
 
-def _task_logger():
-    """say() de la tarea programada: cada línea con fecha en el update.log que ya usaba update.ps1 (no hay consola)."""
-    path = _task_log_path()
+def _file_logger(path, inner=print):
+    """say() para tareas programadas (sin consola): cada línea con fecha en `path` (rota a 256 KB) y por stdout si hay."""
 
     def say(msg=""):
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}  {msg}"
@@ -2303,9 +2306,13 @@ def _task_logger():
                 f.write(line + "\n")
         except OSError:
             pass
-        print(line)
+        inner(line)
 
     return say
+
+
+def _task_logger():
+    return _file_logger(_task_log_path())
 
 
 def cmd_herdr_sync_task(argv):
@@ -2700,6 +2707,8 @@ def sync_installed_copies(say=print):
 
 
 def cmd_update(argv, say=print):
+    if "--install-task" in argv:
+        return register_update_task(say)
     check = "--check" in argv
     st = repo_status(fetch_timeout=30)
     if st["fetch_error"]:
@@ -2731,6 +2740,364 @@ def cmd_update(argv, say=print):
     sync_installed_copies(say)
     say("listo; agentnav doctor para verificar la instalación.")
     return 0
+
+
+# ---------------------------------------------------------------- auto-update (tarea programada)
+
+UPDATE_TASK = "AgentNav update"
+
+
+def pythonw_exe():
+    """pythonw.exe del Python que está corriendo (sin consola: la tarea no abre ventana); si no está, python.exe."""
+    cand = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return cand if os.path.isfile(cand) else sys.executable
+
+
+def update_task_xml(pyw, script, name=UPDATE_TASK, user=None, start=None):
+    """XML de la tarea programada del auto-update (schtasks /Create /XML): cada hora desde el registro y 2 minutos después
+    de iniciar sesión; sin ventana (pythonw), sin administrador, 30 min de tope, no se superpone, corre al volver si la PC
+    estaba apagada y sólo con red. Acción: <pyw> -I "<script>" update --task."""
+    from xml.sax.saxutils import escape
+    start = start or time.strftime("%Y-%m-%dT%H:%M:%S")
+    user = user if user is not None else (os.environ.get("USERDOMAIN", "") + "\\" + os.environ.get("USERNAME", "")).strip("\\")
+    user_xml = f"      <UserId>{escape(user)}</UserId>\n" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>AgentNav: cada hora trae lo nuevo de AgentNav (git pull --ff-only si el árbol está limpio), re-copia hooks, arranque y config de Herdr, e instala el Herdr del fork si hay build nuevo y ningún agente trabaja. Log: {escape(_task_log_path())}. Registrada por: agentnav update --install-task</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>{escape(start)}</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+{user_xml}      <Delay>PT2M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(pyw)}</Command>
+      <Arguments>-I "{escape(script)}" update --task</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _schtasks(args, timeout=30):
+    try:
+        cp = subprocess.run(["schtasks", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout, creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AgentNavError(f"schtasks {' '.join(args[:2])}: {e}")
+    return cp.returncode, (cp.stdout or "").strip(), (cp.stderr or "").strip()
+
+
+def register_update_task(say=print, name=UPDATE_TASK):
+    """`agentnav update --install-task`: registra (o reemplaza) la tarea programada del auto-update para el usuario
+    actual, sin administrador. Lo corre el instalador; también sirve para reponerla. Si quedó la tarea vieja del
+    instalador del fork ("AgentNav Herdr update", update.ps1 diario que no instala con Herdr abierto), la borra."""
+    pyw, script = pythonw_exe(), os.path.join(HOME, "agentnav.py")
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = os.path.join(STATE_DIR, "update-task.xml")
+    with open(tmp, "w", encoding="utf-16") as f:  # schtasks /XML espera UTF-16 con BOM, como declara el encabezado
+        f.write(update_task_xml(pyw, script, name))
+    code, out, err = _schtasks(["/Create", "/F", "/TN", name, "/XML", tmp])
+    if code != 0:
+        raise AgentNavError(f"no pude registrar la tarea '{name}': {(err or out)[:300]}")
+    if name != HERDR_UPDATE_TASK and herdr_update_task_registered(HERDR_UPDATE_TASK):
+        code, out, err = _schtasks(["/Delete", "/F", "/TN", HERDR_UPDATE_TASK])
+        say(f"tarea vieja '{HERDR_UPDATE_TASK}' {'eliminada' if code == 0 else 'no se pudo borrar: ' + (err or out)[:120]} (la reemplaza '{name}')")
+    say(f"tarea '{name}' registrada: cada hora y al iniciar sesión, {pyw} -I {script} update --task (log: {_task_log_path()})")
+    return 0
+
+
+def _notify_herdr(title, body, say=print):
+    """Notificación dentro de Herdr (si el servidor corre); si no, sólo el log."""
+    try:
+        if server_running():
+            run("notification", "show", title, "--body", body, "--sound", "none", timeout=10)
+    except AgentNavError as e:
+        say(f"no pude mostrar la notificación en Herdr: {e}")
+
+
+def _reregister_hooks(say=print):
+    """Tras un pull, vuelve a registrar los hooks en el settings.json de Claude por si una versión nueva agregó alguno
+    (installer/configurar.py claude-hooks es idempotente: sólo agrega lo que falta)."""
+    cfg = os.path.join(HOME, "installer", "configurar.py")
+    if not os.path.isfile(cfg):
+        return
+    try:
+        cp = subprocess.run([sys.executable, "-I", "-X", "utf8", cfg, "claude-hooks", os.path.join(CLAUDE_HOME, "settings.json"),
+                             os.path.join(CLAUDE_HOME, "hooks")], capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60, creationflags=CREATE_NO_WINDOW)
+        msg = (cp.stdout or cp.stderr).strip()
+        if cp.returncode != 0 or "registrados" in msg:
+            say(f"configurar.py claude-hooks: {msg[-200:]}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say(f"configurar.py claude-hooks: {e}")
+
+
+def _update_agentnav_task(say):
+    """La parte de AgentNav de `update --task`. Devuelve 0 si quedó al día (o actualizó), 1 si no pudo (lo dice en el log).
+    AgentNavError si C:\\AgentNav no es un clon (instalación del zip sin git): no hay de dónde traer."""
+    st = repo_status(fetch_timeout=60)
+    if st["fetch_error"]:
+        say(f"AgentNav: no pude consultar origin: {st['fetch_error']}")
+        return 1
+    if _sin_upstream(st):
+        say(f"AgentNav: {_sin_upstream(st)}")
+        return 1
+    action = update_action(st["dirty"], st["ahead"], st["behind"])
+    if action == "sucio":
+        say(f"AgentNav: hay {st['behind']} commit(s) nuevos en {st['upstream']} pero {HOME} tiene cambios sin commitear: no toco nada")
+        return 1
+    if action == "adelantado":
+        if st["behind"]:
+            say(f"AgentNav: {HOME} tiene {st['ahead']} commit(s) sin pushear y {st['upstream']} {st['behind']} nuevos: no hago pull")
+            return 1
+        action = "al_dia"  # sólo adelantado: nada que traer
+    quiet = lambda m="": None if str(m).startswith("nada que sincronizar") else say(m)  # noqa: E731
+    if action == "pull":
+        remote, _, branch = st["upstream"].partition("/")
+        code, out, err = _git(["pull", "--ff-only", remote, branch], timeout=120)
+        if code != 0:
+            raise AgentNavError(f"git pull --ff-only falló: {(err or out)[-300:]}")
+        _, sha, _ = _git(["rev-parse", "--short", "HEAD"], timeout=10)
+        say(f"AgentNav actualizado: {st['sha']} → {sha} ({st['behind']} commit(s) de {st['upstream']})")
+        changed = sync_installed_copies(quiet)
+        _reregister_hooks(say)
+        body = f"{st['behind']} commit(s) de {st['upstream']}" + (f"; re-copiados: {', '.join(os.path.basename(c) for c in changed)}" if changed else "")
+        _notify_herdr(f"AgentNav actualizado a {sha}", body, say)
+        return 0
+    sync_installed_copies(quiet)  # al día: sólo repone una copia instalada que falte o difiera, sin ruido
+    return 0
+
+
+def cmd_update_task():
+    """`agentnav update --task`: lo que corre la tarea programada '%s' cada hora con pythonw (sin ventana).
+    1) AgentNav: git pull --ff-only si origin tiene commits nuevos y el árbol está limpio; re-copia hooks, arranque y
+       config de Herdr (tema conservado, servidor recargado) y avisa dentro de Herdr. Sin git (instalación del zip),
+       sucio o adelantado: lo anota y sigue.
+    2) Herdr del fork (settings.json → herdr_fork.repo): lo mismo que `herdr-sync --task`.
+    Al día en todo: no escribe nada. Log: %%LOCALAPPDATA%%\\AgentNav\\update.log""" % UPDATE_TASK
+    say = _task_logger()
+    code = 0
+    try:
+        code = _update_agentnav_task(say)
+    except AgentNavError as e:
+        say(f"AgentNav: {e}")
+        code = 1
+    if fork_repo():
+        try:
+            cmd_herdr_sync(["--task"], say=say)
+        except AgentNavError as e:
+            say(f"Herdr: {e}")
+            code = 1
+    return code
+
+
+# ---------------------------------------------------------------- auto-update (tarea programada)
+
+UPDATE_TASK = "AgentNav update"
+
+
+def pythonw_exe():
+    """pythonw.exe del Python que está corriendo (sin consola: la tarea no abre ventana); si no está, python.exe."""
+    cand = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return cand if os.path.isfile(cand) else sys.executable
+
+
+def update_task_xml(pyw, script, name=UPDATE_TASK, user=None, start=None):
+    """XML de la tarea programada del auto-update (schtasks /Create /XML): cada hora desde el registro y 2 minutos después
+    de iniciar sesión; sin ventana (pythonw), sin administrador, 30 min de tope, no se superpone, corre al volver si la PC
+    estaba apagada y sólo con red. Acción: <pyw> -I "<script>" update --task."""
+    from xml.sax.saxutils import escape
+    start = start or time.strftime("%Y-%m-%dT%H:%M:%S")
+    user = user if user is not None else (os.environ.get("USERDOMAIN", "") + "\\" + os.environ.get("USERNAME", "")).strip("\\")
+    user_xml = f"      <UserId>{escape(user)}</UserId>\n" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>AgentNav: cada hora trae lo nuevo de AgentNav (git pull --ff-only si el árbol está limpio), re-copia hooks, arranque y config de Herdr, e instala el Herdr del fork si hay build nuevo y ningún agente trabaja. Log: {escape(_task_log_path())}. Registrada por: agentnav update --install-task</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>{escape(start)}</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+{user_xml}      <Delay>PT2M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(pyw)}</Command>
+      <Arguments>-I "{escape(script)}" update --task</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _schtasks(args, timeout=30):
+    try:
+        cp = subprocess.run(["schtasks", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout, creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AgentNavError(f"schtasks {' '.join(args[:2])}: {e}")
+    return cp.returncode, (cp.stdout or "").strip(), (cp.stderr or "").strip()
+
+
+def register_update_task(say=print, name=UPDATE_TASK):
+    """`agentnav update --install-task`: registra (o reemplaza) la tarea programada del auto-update para el usuario
+    actual, sin administrador. Lo corre el instalador; también sirve para reponerla. Si quedó la tarea vieja del
+    instalador del fork ("AgentNav Herdr update", update.ps1 diario que no instala con Herdr abierto), la borra."""
+    pyw, script = pythonw_exe(), os.path.join(HOME, "agentnav.py")
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = os.path.join(STATE_DIR, "update-task.xml")
+    with open(tmp, "w", encoding="utf-16") as f:  # schtasks /XML espera UTF-16 con BOM, como declara el encabezado
+        f.write(update_task_xml(pyw, script, name))
+    code, out, err = _schtasks(["/Create", "/F", "/TN", name, "/XML", tmp])
+    if code != 0:
+        raise AgentNavError(f"no pude registrar la tarea '{name}': {(err or out)[:300]}")
+    if name != HERDR_UPDATE_TASK and herdr_update_task_registered(HERDR_UPDATE_TASK):
+        code, out, err = _schtasks(["/Delete", "/F", "/TN", HERDR_UPDATE_TASK])
+        say(f"tarea vieja '{HERDR_UPDATE_TASK}' {'eliminada' if code == 0 else 'no se pudo borrar: ' + (err or out)[:120]} (la reemplaza '{name}')")
+    say(f"tarea '{name}' registrada: cada hora y al iniciar sesión, {pyw} -I {script} update --task (log: {_task_log_path()})")
+    return 0
+
+
+def _notify_herdr(title, body, say=print):
+    """Notificación dentro de Herdr (si el servidor corre); si no, sólo el log."""
+    try:
+        if server_running():
+            run("notification", "show", title, "--body", body, "--sound", "none", timeout=10)
+    except AgentNavError as e:
+        say(f"no pude mostrar la notificación en Herdr: {e}")
+
+
+def _reregister_hooks(say=print):
+    """Tras un pull, vuelve a registrar los hooks en el settings.json de Claude por si una versión nueva agregó alguno
+    (installer/configurar.py claude-hooks es idempotente: sólo agrega lo que falta)."""
+    cfg = os.path.join(HOME, "installer", "configurar.py")
+    if not os.path.isfile(cfg):
+        return
+    try:
+        cp = subprocess.run([sys.executable, "-I", "-X", "utf8", cfg, "claude-hooks", os.path.join(CLAUDE_HOME, "settings.json"),
+                             os.path.join(CLAUDE_HOME, "hooks")], capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60, creationflags=CREATE_NO_WINDOW)
+        msg = (cp.stdout or cp.stderr).strip()
+        if cp.returncode != 0 or "registrados" in msg:
+            say(f"configurar.py claude-hooks: {msg[-200:]}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say(f"configurar.py claude-hooks: {e}")
+
+
+def _update_agentnav_task(say):
+    """La parte de AgentNav de `update --task`. Devuelve 0 si quedó al día (o actualizó), 1 si no pudo (lo dice en el log).
+    AgentNavError si C:\\AgentNav no es un clon (instalación del zip sin git): no hay de dónde traer."""
+    st = repo_status(fetch_timeout=60)
+    if st["fetch_error"]:
+        say(f"AgentNav: no pude consultar origin: {st['fetch_error']}")
+        return 1
+    if _sin_upstream(st):
+        say(f"AgentNav: {_sin_upstream(st)}")
+        return 1
+    action = update_action(st["dirty"], st["ahead"], st["behind"])
+    if action == "sucio":
+        say(f"AgentNav: hay {st['behind']} commit(s) nuevos en {st['upstream']} pero {HOME} tiene cambios sin commitear: no toco nada")
+        return 1
+    if action == "adelantado":
+        if st["behind"]:
+            say(f"AgentNav: {HOME} tiene {st['ahead']} commit(s) sin pushear y {st['upstream']} {st['behind']} nuevos: no hago pull")
+            return 1
+        action = "al_dia"  # sólo adelantado: nada que traer
+    quiet = lambda m="": None if str(m).startswith("nada que sincronizar") else say(m)  # noqa: E731
+    if action == "pull":
+        remote, _, branch = st["upstream"].partition("/")
+        code, out, err = _git(["pull", "--ff-only", remote, branch], timeout=120)
+        if code != 0:
+            raise AgentNavError(f"git pull --ff-only falló: {(err or out)[-300:]}")
+        _, sha, _ = _git(["rev-parse", "--short", "HEAD"], timeout=10)
+        say(f"AgentNav actualizado: {st['sha']} → {sha} ({st['behind']} commit(s) de {st['upstream']})")
+        changed = sync_installed_copies(quiet)
+        _reregister_hooks(say)
+        body = f"{st['behind']} commit(s) de {st['upstream']}" + (f"; re-copiados: {', '.join(os.path.basename(c) for c in changed)}" if changed else "")
+        _notify_herdr(f"AgentNav actualizado a {sha}", body, say)
+        return 0
+    sync_installed_copies(quiet)  # al día: sólo repone una copia instalada que falte o difiera, sin ruido
+    return 0
+
+
+def cmd_update_task():
+    """`agentnav update --task`: lo que corre la tarea programada '%s' cada hora con pythonw (sin ventana).
+    1) AgentNav: git pull --ff-only si origin tiene commits nuevos y el árbol está limpio; re-copia hooks, arranque y
+       config de Herdr (tema conservado, servidor recargado) y avisa dentro de Herdr. Sin git (instalación del zip),
+       sucio o adelantado: lo anota y sigue.
+    2) Herdr del fork (settings.json → herdr_fork.repo): lo mismo que `herdr-sync --task`.
+    Al día en todo: no escribe nada. Log: %%LOCALAPPDATA%%\\AgentNav\\update.log""" % UPDATE_TASK
+    say = _task_logger()
+    code = 0
+    try:
+        code = _update_agentnav_task(say)
+    except AgentNavError as e:
+        say(f"AgentNav: {e}")
+        code = 1
+    if fork_repo():
+        try:
+            cmd_herdr_sync(["--task"], say=say)
+        except AgentNavError as e:
+            say(f"Herdr: {e}")
+            code = 1
+    return code
 
 
 # ---------------------------------------------------------------- doctor
@@ -3101,7 +3468,7 @@ def cmd_doctor():
             elif _sin_upstream(st):
                 check(None, _sin_upstream(st))
             elif st["behind"]:
-                check(None, f"hay {st['behind']} commit(s) nuevos en origin: agentnav update")
+                check(None, f"hay {st['behind']} commit(s) nuevos en origin: la tarea '{UPDATE_TASK}' los trae en la próxima hora (o ya: agentnav update)")
             else:
                 check(True, f"repo al día con origin ({st['sha']})")
             if st["ahead"]:
@@ -3146,14 +3513,16 @@ def cmd_doctor():
             check(None, f"el fork republicó {rel['tag']} con otro build (sha {want[:8]}, instalado {have[:8] or '-'}): agentnav herdr-sync")
         else:
             check(None, f"Herdr {inst} es más nuevo que el último build del fork ({rel['tag']}); el workflow lo alcanza en su próxima corrida")
-        task = herdr_update_task_registered()
-        if task:
-            check(True, f"tarea '{HERDR_UPDATE_TASK}' registrada (chequeo automático de Herdr)")
-        elif task is None:
-            check(None, f"no pude consultar schtasks por la tarea '{HERDR_UPDATE_TASK}'")
-        else:
-            check(None, f"sin la tarea '{HERDR_UPDATE_TASK}' (chequeo automático): la crea {os.path.join(HOME, 'herdr-fork', 'install.ps1')} -NoLaunch, "
-                        "que además reinstala el build del fork y puede cerrar Herdr; correrlo sin agentes trabajando")
+    # Auto-update (AgentNav y, si hay fork, Herdr): la tarea programada que deja el instalador
+    task = herdr_update_task_registered(UPDATE_TASK)
+    if task:
+        check(True, f"tarea '{UPDATE_TASK}' registrada (auto-update cada hora: AgentNav y Herdr; log {_task_log_path()})")
+    elif task is None:
+        check(None, f"no pude consultar schtasks por la tarea '{UPDATE_TASK}'")
+    elif herdr_update_task_registered(HERDR_UPDATE_TASK):
+        check(None, f"tarea vieja '{HERDR_UPDATE_TASK}' (sólo Herdr, y no instala con Herdr abierto): agentnav update --install-task la reemplaza")
+    else:
+        check(None, f"sin la tarea '{UPDATE_TASK}' (auto-update): agentnav update --install-task")
 
     bad = 0
     for ok, text in results:
@@ -3357,6 +3726,8 @@ def main(argv):
     if cmd == "doctor":
         return cmd_doctor()
     if cmd in ("update", "actualizar"):
+        if "--task" in argv:
+            return cmd_update_task()
         return cmd_update(argv[1:])
     if cmd in ("herdr-sync", "herdr"):
         if "--task" in argv:

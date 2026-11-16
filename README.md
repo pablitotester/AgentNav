@@ -32,7 +32,7 @@ Diseño completo y decisiones: `docs/DISENO.html`.
 
 El hook **tiene que guardarse como UTF-8 con BOM**: Windows PowerShell 5.1 lee UTF-8 sin BOM como Windows-1252.
 
-**Actualizar:** `C:\AgentNav` es un clon de `https://github.com/pablitotester/AgentNav`; `agentnav update` trae lo nuevo (`git pull --ff-only`, no toca nada si hay cambios locales sin commitear) y vuelve a copiar a su lugar los hooks, el `.vbs` de Inicio y el `config.toml` de Herdr (con respaldo `config.toml.bak-fecha` y recarga del servidor). `doctor` avisa cuando origin tiene commits nuevos, y `agentnav app` (el acceso directo) hace el mismo chequeo al arrancar, en paralelo con el servidor, y si hay algo nuevo lo muestra como notificación dentro de Herdr (`herdr notification show`); sin red o sin clon no molesta.
+**Actualizar:** `C:\AgentNav` es un clon de `https://github.com/pablitotester/AgentNav`; `agentnav update` trae lo nuevo (`git pull --ff-only`, no toca nada si hay cambios locales sin commitear) y vuelve a copiar a su lugar los hooks, el `.vbs` de Inicio y el `config.toml` de Herdr (con respaldo `config.toml.bak-fecha` y recarga del servidor). **Auto-update:** el instalador registra la tarea programada "AgentNav update" (`agentnav update --install-task`), que cada hora y al iniciar sesión corre `agentnav update --task` sin ventana: el mismo pull (sólo con el árbol limpio) y la misma re-copia, y después `herdr-sync --task` para el Herdr del fork; avisa dentro de Herdr y escribe en `%LOCALAPPDATA%\AgentNav\update.log` sólo cuando hace algo. `doctor` avisa cuando origin tiene commits nuevos, y `agentnav app` (el acceso directo) hace el mismo chequeo al arrancar, en paralelo con el servidor, y si hay algo nuevo lo muestra como notificación dentro de Herdr (`herdr notification show`); sin red o sin clon no molesta.
 
 ## Uso
 
@@ -49,6 +49,7 @@ agentnav recent              carpetas donde usaste Claude Code o Gemini CLI y no
 agentnav hoy [ayer|fecha]    diario del día: pedidos por proyecto, sesiones, tiempo trabajando
 agentnav doctor              verifica Herdr, hooks, config, shell de los paneles, arranque, registro; avisa si origin tiene commits nuevos
 agentnav update [--check]    git pull --ff-only de origin y re-copia hooks, arranque y config de Herdr (con respaldo); --check sólo avisa (sale 10 si hay nuevos)
+agentnav update --install-task  registra la tarea programada "AgentNav update" (auto-update cada hora); --task es lo que corre esa tarea
 agentnav theme [nombre]      tema de colores de Herdr: selector (el popup ctrl+b alt+t), `theme list`, o aplica uno (cs16, matrix, procomm, o los de Herdr)
 agentnav herdr-sync          instala el herdr.exe del fork con los temas compilados (settings.json → herdr_fork.repo); compara SHA-256, así que también reinstala un rebuild del mismo tag; --force si hay agentes ocupados o para reinstalar el mismo exe
 agentnav ntfy-test           aviso de prueba al teléfono
@@ -199,8 +200,8 @@ después pisa el exe. Tanto `herdr-sync` como `doctor` comparan el SHA-256 del e
 `herdr.exe.sha256` del último release, no sólo el tag: si el workflow republicó `agentnav-vX.Y.Z` con otro parche de temas
 (mismo tag, otro exe), `doctor` avisa "el fork republicó ... con otro build" y `herdr-sync` lo instala sin `--force`.
 `doctor` dice además si el exe instalado es el del fork, si `herdr update` lo pisó, si el fork tiene una versión más
-nueva y si está registrada la tarea programada "AgentNav Herdr update" (el chequeo automático que deja
-`herdr-fork\install.ps1`). Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
+nueva y si está registrada la tarea programada "AgentNav update" (el auto-update que deja el instalador; reemplaza a la
+vieja "AgentNav Herdr update" de `herdr-fork\install.ps1`, que no instalaba con Herdr abierto). Para volver al oficial: `herdr update`, o copiar `herdr.exe.oficial` sobre `herdr.exe`.
 
 **Otra PC desde cero (la de casa):** el release del fork trae también el zip completo con conpty y un manifiesto
 `agentnav-latest.json` con la misma forma que `herdr.dev/latest.json`, así que el instalador oficial de Herdr lo instala

@@ -23,7 +23,8 @@ Después
   Carpeta existente: agentnav new MiProyecto C:\ruta\a\la\carpeta
 - Dentro de Herdr: ctrl+b, soltar, alt+p = selector de proyectos · alt+t = temas · F1 = ayuda
 - La primera vez Claude Code te va a pedir iniciar sesión con tu cuenta de Anthropic.
-- Actualizar AgentNav más adelante:  agentnav update   (doctor avisa cuando hay algo nuevo)
+- Se actualiza solo: la tarea programada "AgentNav update" revisa cada hora si hay algo nuevo de AgentNav
+  (y del Herdr con temas) y lo instala; avisa dentro de Herdr. A mano:  agentnav update
 - Todo lo demás: C:\AgentNav\README.md
 
 Qué toca en tu PC
@@ -32,6 +33,7 @@ Qué toca en tu PC
 - %USERPROFILE%\.claude\hooks\agentnav-*         hooks de Claude Code, y su registro en .claude\settings.json
 - %APPDATA%\herdr\config.toml                    config de Herdr (si tenías una, queda un .bak al lado)
 - Inicio de Windows: Herdr server.vbs            levanta el servidor al iniciar sesión
+- Tarea programada "AgentNav update"            auto-update cada hora (log en %LOCALAPPDATA%\AgentNav\update.log)
 - Perfiles de PowerShell: alias agentnav
 - Escritorio: acceso directo Herdr
 
@@ -43,5 +45,5 @@ Opciones (en una PowerShell, desde la carpeta del zip)
                                                                           los hooks de AgentNav en %USERPROFILE%\.gemini\settings.json
                                                                           (sin pisar lo que ya haya). La primera vez Gemini
                                                                           pide iniciar sesión con tu cuenta de Google.
-Si hay git y acceso a github.com/pablitotester/AgentNav, C:\AgentNav queda como clon y se actualiza con agentnav update;
-si no, con la copia del zip. Volver a correr el instalador actualiza sin perder settings.json ni projects.json.
+Si hay git y acceso a github.com/pablitotester/AgentNav, C:\AgentNav queda como clon y se actualiza solo (tarea
+"AgentNav update", o a mano agentnav update); si no, con la copia del zip. Volver a correr el instalador actualiza sin perder settings.json ni projects.json.

@@ -2192,7 +2192,11 @@ def _stop_all_herdr(say=print, timeout=30.0):
 
 def cmd_herdr_sync(argv, say=print):
     import faulthandler
-    faulthandler.enable()
+    try:
+        faulthandler.enable()
+    except (RuntimeError, AttributeError):  # pyw.exe (tarea programada): no hay stderr
+        pass
+    task_mode = "--task" in argv  # lo corre la tarea programada: al día → silencio; al instalar → sin ventana
     repo = fork_repo()
     if not repo:
         raise AgentNavError("falta settings.json → herdr_fork.repo (por ejemplo \"pablo/herdr\")")
@@ -2202,7 +2206,8 @@ def cmd_herdr_sync(argv, say=print):
     if "herdr.exe" not in rel["assets"] or "herdr.exe.sha256" not in rel["assets"]:
         raise AgentNavError(f"el release {rel['tag']} no tiene herdr.exe y su .sha256 ({rel['url']})")
     inst = installed_herdr_version()
-    say(f"instalado: herdr {inst or '?'} · fork: {rel['tag']}")
+    if not task_mode:
+        say(f"instalado: herdr {inst or '?'} · fork: {rel['tag']}")
     if _ver_tuple(rel["version"]) > _ver_tuple(inst):
         say("el fork va por una versión más nueva que la instalada: primero el instalador oficial (herdr update)…")
         code, out, err = run("update", timeout=900)
@@ -2225,10 +2230,17 @@ def cmd_herdr_sync(argv, say=print):
             with open(herdr_build_marker_path(), "w", encoding="utf-8") as f:
                 json.dump({"tag": rel["tag"], "sha256": have, "repo": repo, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}, f, indent=2)
             say("marcador agentnav-build.json actualizado")
+        if task_mode:
+            return 0
         say(f"ya está instalado {rel['tag']} (sha {have[:8]}); --force para reinstalar")
         return 0
     if state == "rebuild":
         say(f"el fork republicó {rel['tag']} con otro build (sha {want[:8]}, instalado {have[:8] or '-'}): lo instalo")
+    # Nadie trabajando (antes de bajar 26 MB: la tarea programada pasa por acá cada hora mientras el build quede pendiente)
+    snap = _snapshot_or_none()
+    busy = [a.get("name") or a.get("pane_id") for a in (snap or {}).get("agents", []) if a.get("agent_status") in ("working", "blocked")]
+    if busy and "--force" not in argv:
+        raise AgentNavError(f"hay agentes ocupados ({', '.join(map(str, busy))}); reinstalar reinicia todos los Claude. Cuando terminen, o agentnav herdr-sync --force")
     # Descarga y verificación
     dl = os.path.join(STATE_DIR, "herdr-download")
     os.makedirs(dl, exist_ok=True)
@@ -2242,11 +2254,6 @@ def cmd_herdr_sync(argv, say=print):
     if got != want:  # want: el sha256 que publica el release, ya bajado y validado arriba
         raise AgentNavError(f"SHA-256 no coincide (esperado {want[:12]}…, bajado {got[:12]}…); no instalo nada")
     marker = {"tag": rel["tag"], "sha256": got, "repo": repo, "installed": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    # Nadie trabajando
-    snap = _snapshot_or_none()
-    busy = [a.get("name") or a.get("pane_id") for a in (snap or {}).get("agents", []) if a.get("agent_status") in ("working", "blocked")]
-    if busy and "--force" not in argv:
-        raise AgentNavError(f"hay agentes ocupados ({', '.join(map(str, busy))}); reinstalar reinicia todos los Claude. Cuando terminen, o agentnav herdr-sync --force")
     ours, _ = herdr_is_ours(have)
     official = exe + ".oficial"
     if ours is False and not os.path.isfile(official):
@@ -2269,7 +2276,48 @@ def cmd_herdr_sync(argv, say=print):
         json.dump(marker, f, indent=2)
     say(f"herdr.exe reemplazado por {rel['tag']} (herdr {installed_herdr_version() or '?'}).")
     shutil.rmtree(dl, ignore_errors=True)
+    if task_mode:
+        if ensure_server(say):
+            restore_projects(load_projects(), say)
+        label_agents(say)
+        say("servidor de Herdr arriba sin ventana (los Claude se reanudan); la ventana la abre el acceso directo de AgentNav.")
+        return 0
     return cmd_app(say)
+
+
+def _task_log_path():
+    return os.path.join(USERPROFILE or HOME, ".herdr", "agentnav", "update.log")
+
+
+def _task_logger():
+    """say() de la tarea programada: cada línea con fecha en el update.log que ya usaba update.ps1 (no hay consola)."""
+    path = _task_log_path()
+
+    def say(msg=""):
+        line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}  {msg}"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.isfile(path) and os.path.getsize(path) > 256 * 1024:
+                os.replace(path, path + ".old")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+        print(line)
+
+    return say
+
+
+def cmd_herdr_sync_task(argv):
+    """`agentnav herdr-sync --task`: lo que corre la tarea programada '%s' cada hora con pyw.exe (sin ventana).
+    Al día → no escribe nada. Hay agentes trabajando o bloqueados → lo anota y queda para la próxima hora. Si instala,
+    cierra Herdr, reemplaza el exe y vuelve a levantar el servidor (los Claude se reanudan), sin abrir ventana.""" % HERDR_UPDATE_TASK
+    say = _task_logger()
+    try:
+        return cmd_herdr_sync(argv, say=say)
+    except AgentNavError as e:
+        say(f"error: {e}")
+        return 1
 
 
 # ---------------------------------------------------------------- temas
@@ -3311,6 +3359,8 @@ def main(argv):
     if cmd in ("update", "actualizar"):
         return cmd_update(argv[1:])
     if cmd in ("herdr-sync", "herdr"):
+        if "--task" in argv:
+            return cmd_herdr_sync_task(argv[1:])
         return cmd_herdr_sync(argv[1:])
     if cmd in ("theme", "tema"):
         arg = rest.strip()

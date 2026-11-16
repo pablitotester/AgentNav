@@ -42,9 +42,7 @@ texto/fila activa ≥ 3.0, lo mismo para la fila de selección, y selección ≠
 
 ## Cómo se mantiene al día
 
-`agentnav-build.yml` corre una vez por semana (lunes, `17 6 * * 1` UTC; antes cada 6 horas, hasta que GitHub pausó
-Actions en el fork por el consumo de dos builds diarios en runners Windows), con cada push del parche y a mano desde la
-pestaña Actions (`gh workflow run agentnav-build.yml -R pablitotester/herdr -f force=true`):
+`agentnav-build.yml` corre una vez por día (`17 6 * * *` UTC; el job de sync es Linux y dura un minuto, sólo compila si hay tag nuevo), con cada push del parche y a mano desde la pestaña Actions (`gh workflow run agentnav-build.yml -R pablitotester/herdr -f force=true`):
 
 1. Busca el último tag `vX.Y.Z` de `herdrdev/herdr`. Si es más nuevo que `agentnav/BASE_TAG`, rebasa esta rama sobre él,
    la deja como **un solo commit** encima del tag y la sube con `--force-with-lease`.

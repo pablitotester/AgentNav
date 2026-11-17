@@ -1746,6 +1746,12 @@ def _tab_path(cwd, project):
     return cwd if cwd and os.path.isdir(cwd) else new_project_base()
 
 
+def _born_with_own_cwd(cwd):
+    """True si el panel nació en una carpeta pedida a propósito: existe y no es el new_cwd fijo donde Herdr deja
+    lo pelado."""
+    return bool(cwd) and os.path.isdir(cwd) and _norm_path(cwd) != _norm_path(new_project_base())
+
+
 def cmd_adopt(argv, say=print):
     """Ganchos `tab.created` y `pane.created` del plugin (C:\\AgentNav\\plugin). Herdr los llama con HERDR_WORKSPACE_ID,
     HERDR_TAB_ID, HERDR_PANE_ID, HERDR_PLUGIN_EVENT y HERDR_PLUGIN_CONTEXT_JSON. El "+" de la barra y el split entran
@@ -1772,8 +1778,7 @@ def cmd_adopt(argv, say=print):
         return 0
     if event == "pane.created":
         born = (ev.get("pane") or {}).get("cwd") or ""
-        base = new_project_base()
-        if born and os.path.isdir(born) and _norm_path(born) != _norm_path(base):
+        if _born_with_own_cwd(born):
             say(f"adopt: {pid} nació con carpeta propia ({born}); lo dejo como está.")
             return 0
     else:
@@ -1823,7 +1828,13 @@ def _adopt_run(event, wid, tid, pid, say):
         origin = max(live, key=lambda x: x.get("state_change_seq") or 0) if live else next((x for x in pool if x.get("cwd")), None)
     hint = (origin or {}).get("cwd") or ""
     project = next((p for p in load_projects() if p["name"].lower() == ws_label(ws)), None)
-    path = _tab_path(hint, project)
+    born = mine.get("cwd") or ""
+    if event != "pane.created" and _born_with_own_cwd(born):
+        # Pestaña con etiqueta numérica pero nacida en una carpeta pedida (el "+" del árbol de carpetas crea un espacio
+        # ahí): la carpeta se respeta, sólo se le pone nombre. Hasta el 17/11 la mandaba a C:\ por no tener origen.
+        path = born
+    else:
+        path = _tab_path(hint, project)
     if not wait_prompt(pid, 15000):
         say(f"{pid}: no vi el prompt del shell en 15 s (¿prompt decorado? settings.json → prompt_regex); sigo igual.")
     if _norm_path(mine.get("cwd") or "") != _norm_path(path):

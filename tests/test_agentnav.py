@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agentnav as an  # noqa: E402
@@ -103,6 +104,14 @@ class ClaudeCode(unittest.TestCase):
         self.assertEqual(an._tab_label("C:\\"), "shell")          # raíz: no hay nombre
         self.assertEqual(an._tab_label("C:\\obra\\2024"), "shell")  # numérica: al nacer la adoptaría el plugin
         self.assertEqual(an._tab_label("C:\\obra\\v2"), "v2")
+
+    def test_born_with_own_cwd(self):
+        with mock.patch.object(an, "new_project_base", return_value="C:\\"):
+            self.assertTrue(an._born_with_own_cwd(os.path.dirname(os.path.abspath(__file__))))
+            self.assertFalse(an._born_with_own_cwd("C:\\"))
+            self.assertFalse(an._born_with_own_cwd("c:/"))
+            self.assertFalse(an._born_with_own_cwd(""))
+            self.assertFalse(an._born_with_own_cwd("C:\\no-existe-agentnav-xyz"))
 
     def test_adopt_origin(self):
         a = {"pane_id": "w1:p1", "cwd": "C:\\A", "rect": {"x": 0, "y": 0, "width": 50, "height": 20}}

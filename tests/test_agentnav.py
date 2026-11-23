@@ -548,14 +548,16 @@ class Gemini(unittest.TestCase):
         self.assertEqual(an.agent_label(c, "otra cosa"), "obra · Arreglo del build")   # Claude: manda su título
 
     def test_gemini_folder_trusted(self):
-        rules = {"c:/agentnav": "TRUST_FOLDER", "c:/obra/sub": "TRUST_PARENT", "c:/agentnav/secreto": "DO_NOT_TRUST"}
+        # Carpetas inventadas: _gemini_trust_key pasa por realpath, y una real puede ser un enlace (C:\AgentNav lo es
+        # cuando apunta al clon de desarrollo), con lo que la clave cambia y el test depende de la PC.
+        rules = {"c:/zzpruebanav": "TRUST_FOLDER", "c:/obra/sub": "TRUST_PARENT", "c:/zzpruebanav/secreto": "DO_NOT_TRUST"}
         st = {}
-        self.assertTrue(an.gemini_folder_trusted("C:\\AgentNav", rules, st))
-        self.assertTrue(an.gemini_folder_trusted("C:\\AgentNav\\hooks\\", rules, st))     # subcarpeta de una confiada
-        self.assertTrue(an.gemini_folder_trusted("C:\\Obra\\otra", rules, st))             # TRUST_PARENT cubre al padre
-        self.assertFalse(an.gemini_folder_trusted("C:\\AgentNav\\secreto\\x", rules, st))  # la regla más larga manda
-        self.assertFalse(an.gemini_folder_trusted("C:\\PruebaGemini", rules, st))           # sin regla: va a preguntar
-        self.assertFalse(an.gemini_folder_trusted("C:\\AgentNavX", rules, st))              # prefijo engañoso no cuenta
+        self.assertTrue(an.gemini_folder_trusted("C:\\ZzPruebaNav", rules, st))
+        self.assertTrue(an.gemini_folder_trusted("C:\\ZzPruebaNav\\hooks\\", rules, st))     # subcarpeta de una confiada
+        self.assertTrue(an.gemini_folder_trusted("C:\\Obra\\otra", rules, st))               # TRUST_PARENT cubre al padre
+        self.assertFalse(an.gemini_folder_trusted("C:\\ZzPruebaNav\\secreto\\x", rules, st))  # la regla más larga manda
+        self.assertFalse(an.gemini_folder_trusted("C:\\PruebaGemini", rules, st))             # sin regla: va a preguntar
+        self.assertFalse(an.gemini_folder_trusted("C:\\ZzPruebaNavX", rules, st))             # prefijo engañoso no cuenta
         self.assertIsNone(an.gemini_folder_trusted("C:\\x", rules, {"security": {"folderTrust": {"enabled": False}}}))
         self.assertIsNone(an.gemini_folder_trusted("C:\\x", "basura", st))
 

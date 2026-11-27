@@ -35,6 +35,8 @@ una función en `src/app/state.rs`. Por eso el único camino es compilar.
   en vez de `const … = cfg!(windows)`), `src/pane.rs` (re-export), `src/config/model.rs` (`[advanced] cursor_settle_ms`,
   `cursor_jump_hold_ms`), `src/main.rs` (ayuda en `--default-config`) y `src/app/mod.rs` (se fijan en `App::new` y
   `new_from_handoff`). Ver «Cursor que va atrás de las teclas».
+- Modos de entrada abandonados, marcado con `// AgentNav`: `src/pane/terminal.rs` (`reset_abandoned_input_modes` y su test)
+  y `src/pane.rs` (la llamada donde el panel pasa de agente a shell). Ver «Números al pasar el mouse».
 - `.github/workflows/agentnav-build.yml` y esta carpeta.
 
 Reglas de los tests de upstream que las paletas cumplen: `sidebar_bg = Color::Reset`, contraste fondo/fila activa ≥ 1.05,
@@ -76,6 +78,22 @@ Con los defaults el exe se comporta igual que el oficial. Se lee al arrancar el 
 que estacionan el cursor durante un redibujado (Codex idle, barras de estado); 0/40 acota lo peor sin volver a eso. Para
 medir sin ojos: `HERDR_RENDER_PROF=1` en el entorno del servidor cuenta `pty.request_render_delayed` (renders agendados por
 la retención) contra `pty.request_render`.
+
+## Números al pasar el mouse
+
+Un agente que muere matado (un update de Claude Code que reemplaza `claude.exe`, un `taskkill`) no apaga el reporte de
+mouse, el de foco ni el teclado extendido que había pedido, y el shell que recupera el panel tampoco. Herdr seguía
+mandándole al panel cada movimiento del mouse y PowerShell lo escribía en el prompt (`[<35;81;27M…`, `[I[O`, `[27u`).
+Este build, cuando un panel pasa de tener un agente a tener sólo su shell en primer plano, apaga en el emulador del
+panel los modos de mouse (9, 1000, 1002, 1003, 1005, 1006, 1015, 1016) y el de foco (1004); en Windows también el
+protocolo de teclado (kitty y modifyOtherKeys), porque PowerShell y cmd nunca lo negocian. Si el agente salió bien no
+cambia nada (ya estaban apagados). En el log del servidor queda `reset input modes abandoned by agent`.
+
+Para un panel que ya quedó así con un build viejo, desde otra terminal (el Enter tiene que ir como texto, `pane run`
+lo manda codificado):
+
+    herdr pane send-text <pane> "$([char]3)"
+    herdr pane send-text <pane> ('Write-Host -NoNewline "$([char]27)[?1000l$([char]27)[?1002l$([char]27)[?1003l$([char]27)[?1006l$([char]27)[?1004l$([char]27)[<u$([char]27)[=0u"' + "`r")
 
 ## Árbol de carpetas
 

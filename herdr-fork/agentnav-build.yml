@@ -65,6 +65,9 @@ jobs:
         id: pick
         env:
           GH_TOKEN: ${{ github.token }}
+          # Sin esto gh elige el remoto `upstream` (se agrega más abajo) como repo base: buscaba el release agentnav-*
+          # en herdrdev/herdr, no lo encontraba nunca y recompilaba todos los días aunque nada hubiera cambiado.
+          GH_REPO: ${{ github.repository }}
           WANTED: ${{ inputs.tag }}
           FORCE: ${{ inputs.force }}
           EVENT: ${{ github.event_name }}
@@ -145,8 +148,8 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
-      - name: Tests de temas (resolución, contraste, sidebar)
-        run: cargo test --release --locked --target x86_64-pc-windows-msvc --bin herdr -- built_in_theme built_in_active built_in_selection built_in_themes
+      - name: Tests de temas (resolución, contraste, sidebar) y del parche (agentnav_*)
+        run: cargo test --release --locked --target x86_64-pc-windows-msvc --bin herdr -- built_in_theme built_in_active built_in_selection built_in_themes agentnav_
 
       - name: Empaquetar zip con conpty (mismo script que el release oficial)
         shell: pwsh

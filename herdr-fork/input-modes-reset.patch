@@ -1,0 +1,129 @@
+diff --git a/src/pane.rs b/src/pane.rs
+index b00eb7d..e160741 100644
+--- a/src/pane.rs
++++ b/src/pane.rs
+@@ -3101,6 +3101,23 @@ impl PaneRuntime {
+                                         agent_startup_grace_until = None;
+                                     }
+                                 }
++                                // AgentNav: un agente matado no apaga mouse/foco/teclado y el shell
++                                // que recupera el panel tampoco: sin esto cada movimiento del mouse
++                                // se escribe en el prompt.
++                                if previous_agent.is_some()
++                                    && agent.is_none()
++                                    && foreground_is_pane_shell
++                                {
++                                    let (mouse, focus) = terminal.reset_abandoned_input_modes();
++                                    if mouse || focus {
++                                        info!(
++                                            pane = pane_id.raw(),
++                                            mouse,
++                                            focus,
++                                            "reset input modes abandoned by agent"
++                                        );
++                                    }
++                                }
+                                 if let Some(process_name) = process_name {
+                                     info!(
+                                         pane = pane_id.raw(),
+diff --git a/src/pane/terminal.rs b/src/pane/terminal.rs
+index 0312b5a..0b5f88d 100644
+--- a/src/pane/terminal.rs
++++ b/src/pane/terminal.rs
+@@ -632,6 +632,11 @@ impl PaneTerminal {
+         self.ghostty.clear_agent_osc_state()
+     }
+ 
++    /// AgentNav: see `GhosttyPaneTerminal::reset_abandoned_input_modes`.
++    pub fn reset_abandoned_input_modes(&self) -> (bool, bool) {
++        self.ghostty.reset_abandoned_input_modes()
++    }
++
+     pub fn keyboard_protocol(
+         &self,
+         fallback: crate::input::KeyboardProtocol,
+@@ -1353,6 +1358,36 @@ impl GhosttyPaneTerminal {
+         }
+     }
+ 
++    /// AgentNav: an agent that is killed (instead of exiting) never turns off the input modes it
++    /// asked for, and the shell that gets the pane back does not either: every mouse move, focus
++    /// change and CSI-u key would be typed into its prompt. Called when the pane falls back from an
++    /// agent to its shell. Returns whether mouse and focus reporting were still on.
++    pub fn reset_abandoned_input_modes(&self) -> (bool, bool) {
++        let Ok(mut core) = self.core.lock() else {
++            return (false, false);
++        };
++        let mouse = core.terminal.mouse_tracking_enabled().unwrap_or(false);
++        let focus = core
++            .terminal
++            .mode_get(crate::ghostty::MODE_FOCUS_EVENT)
++            .unwrap_or(false);
++        let mut ansi: Vec<u8> = Vec::new();
++        ansi.extend_from_slice(
++            b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l",
++        );
++        // Windows shells (PowerShell, cmd) never negotiate a keyboard protocol; elsewhere a shell
++        // such as fish may already have pushed its own by now, so it is left alone.
++        if cfg!(windows) {
++            ansi.extend_from_slice(b"\x1b[<99u\x1b[=0u\x1b[>4;0m");
++        }
++        core.kitty_keyboard.observe(&ansi);
++        core.terminal.write(&ansi);
++        if let Ok(mut key_encoder) = self.key_encoder.lock() {
++            configure_key_encoder(&mut key_encoder, &core.terminal);
++        }
++        (mouse, focus)
++    }
++
+     pub fn process_pty_bytes(
+         &self,
+         pane_id: PaneId,
+@@ -5596,6 +5631,47 @@ mod tests {
+         assert_eq!(encoded, None);
+     }
+ 
++    // AgentNav
++    #[test]
++    fn agentnav_reset_abandoned_input_modes_stops_mouse_focus_and_keyboard_reports() {
++        let (tx, _rx) = mpsc::channel(4);
++        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
++        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
++        let (fresh_tx, _fresh_rx) = mpsc::channel(4);
++        let fresh_terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
++        let fresh = GhosttyPaneTerminal::new(fresh_terminal, fresh_tx).unwrap();
++        let moved = |pane: &GhosttyPaneTerminal| {
++            pane.encode_mouse_motion(
++                crossterm::event::MouseEventKind::Moved,
++                crate::input::mouse::Position::Cell { column: 4, row: 6 },
++                crossterm::event::KeyModifiers::empty(),
++            )
++        };
++        let key = crate::input::parse_terminal_key_sequence("\x1b[27u").unwrap();
++
++        // What Claude Code leaves behind when it is killed.
++        pane.seed_history_ansi("\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[>1u\x1b[>4;2m");
++        assert!(pane.mouse_reporting_enabled());
++        assert!(pane.focus_reporting_enabled());
++        assert!(moved(&pane).is_some());
++
++        assert_eq!(pane.reset_abandoned_input_modes(), (true, true));
++
++        assert!(!pane.mouse_reporting_enabled());
++        assert!(!pane.focus_reporting_enabled());
++        assert_eq!(moved(&pane), moved(&fresh));
++        #[cfg(windows)]
++        {
++            assert_eq!(pane.modify_other_keys_level(), 0);
++            assert_eq!(
++                pane.encode_terminal_key(key.clone()),
++                fresh.encode_terminal_key(key.clone())
++            );
++        }
++        let _ = key;
++        assert_eq!(fresh.reset_abandoned_input_modes(), (false, false));
++    }
++
+     #[test]
+     fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
+         let (tx, _rx) = mpsc::channel(4);
